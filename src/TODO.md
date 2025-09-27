@@ -4,7 +4,7 @@
     - [ ] Prune games with overtime
 - [ ] Get play by play ingestion
 - [ ] Make sure PbP scores match team level scores
-- [ ] Drop teams with < 10 # obs
+- [X] Drop teams with < _n_ # obs
 
 ### Models
 - [ ] Table stakes model -- harden this training pipeline

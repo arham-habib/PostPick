@@ -1,12 +1,10 @@
-import os
-import json
 import time
 import logging
-import requests
-import pandas as pd
 import argparse
+import pandas as pd
 from tqdm import tqdm
-from datetime import datetime, timedelta
+import requests
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -15,8 +13,6 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = SCRIPT_DIR / "data"
 LOG_DIR = SCRIPT_DIR / "logs"
 SCRAPING_DIR = SCRIPT_DIR / "src/ncaa"
-
-# Constants
 BASE_URL = "https://ncaa-api.henrygd.me/scoreboard/basketball-{}/{}/{}/{}/{}/all-conf"
 
 # Ensure directories exist
@@ -25,7 +21,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 SCRAPING_DIR.mkdir(parents=True, exist_ok=True)
 
 
-def fetch_game_data(sport: str, division: str, year: int, date_str: str) -> Optional[Dict[str, Any]]:
+def fetch_game_data(sport: str, division: str, date_str: str) -> Optional[Dict[str, Any]]:
     """Fetch game data for a specific date."""
     year_str, month_str, day_str = date_str.split("-")
     url = BASE_URL.format(sport, division, year_str, month_str, day_str)
@@ -44,7 +40,7 @@ def fetch_game_data(sport: str, division: str, year: int, date_str: str) -> Opti
         return None
 
 def parse_games(data: Dict[str, Any], date_str: str) -> pd.DataFrame:
-    """Extract relevant game information and return as DataFrame."""
+    """Extract relevant game information and return as DataFrame, including division, home_id, and away_id."""
     if not data or "games" not in data:
         return pd.DataFrame()
     
@@ -59,10 +55,18 @@ def parse_games(data: Dict[str, Any], date_str: str) -> pd.DataFrame:
         away_score = g.get("away", {}).get("score")
         if home_score is None or away_score is None:
             continue
-            
+
+        # Extract division, home_id, away_id
+        division = g.get("division", "")
+        home_id = g.get("home", {}).get("id", "")
+        away_id = g.get("away", {}).get("id", "")
+
         game_list.append({
             "gameID": g.get("gameID", ""),
             "date": date_str,
+            "division": division,
+            "home_id": home_id,
+            "away_id": away_id,
             "home_team": g.get("home", {}).get("names", {}).get("short", "Unknown"),
             "away_team": g.get("away", {}).get("names", {}).get("short", "Unknown"),
             "home_score": home_score,
