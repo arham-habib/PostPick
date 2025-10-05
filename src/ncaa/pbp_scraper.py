@@ -2,60 +2,60 @@ import os
 import json
 import time
 import logging
-import aiohttp
-import asyncio
+import requests
 import pandas as pd
 import argparse
-from tqdm.asyncio import tqdm
+from tqdm import tqdm
 from pathlib import Path
 from typing import Optional, Dict, Any, List
-from aiolimiter import AsyncLimiter
 
 BASE_URL = "https://ncaa-api.henrygd.me/game/{}/play-by-play"
 SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parent / "data"
-LOG_DIR = SCRIPT_DIR.parent / "logs"
+DATA_DIR = SCRIPT_DIR.parent.parent / "data"
+LOG_DIR = SCRIPT_DIR.parent.parent / "logs"
 
 # Ensure directories exist
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 
-# Rate limiter (4 requests per second)
-RATE_LIMITER = AsyncLimiter(4, 1)
+# Rate limiting: 4 requests per second
+REQUEST_DELAY = 0.25  # 250ms between requests
 
-async def fetch_play_by_play(session: aiohttp.ClientSession, game_id: int) -> Optional[Dict[str, Any]]:
-    """Fetch play-by-play data for a given game asynchronously."""
+def fetch_play_by_play(game_id: int) -> Optional[Dict[str, Any]]:
+    """Fetch play-by-play data for a given game."""
     url = BASE_URL.format(game_id)
     retries = 3
     backoff = 1
 
     for attempt in range(retries):
-        async with RATE_LIMITER:
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as response:
-                    if response.status == 404:
-                        logging.warning(f"No play-by-play data available for {game_id}.")
-                        return None
-                    response.raise_for_status()
-                    data = await response.json()
-                    if not data or "periods" not in data:
-                        logging.warning(f"No play-by-play data available for game {game_id}.")
-                        return None
-                    return data
-            except asyncio.TimeoutError:
-                logging.warning(f"Timeout on attempt {attempt + 1} for game {game_id}. Retrying...")
-                await asyncio.sleep(backoff)
-                backoff *= 2
-                continue
-            except aiohttp.ClientError as e:
-                logging.warning(f"Attempt {attempt + 1}: Failed to fetch {game_id}: {e}")
-                await asyncio.sleep(backoff)
-                backoff *= 2
+        try:
+            # Rate limiting
+            time.sleep(REQUEST_DELAY)
+            
+            response = requests.get(url, timeout=5)
+            if response.status_code == 404:
+                logging.warning(f"No play-by-play data available for {game_id}.")
+                return None
+            response.raise_for_status()
+            data = response.json()
+            if not data or "periods" not in data:
+                logging.warning(f"No play-by-play data available for game {game_id}.")
+                return None
+            return data
+        except requests.exceptions.Timeout:
+            logging.warning(f"Timeout on attempt {attempt + 1} for game {game_id}. Retrying...")
+            time.sleep(backoff)
+            backoff *= 2
+            continue
+        except requests.exceptions.RequestException as e:
+            logging.warning(f"Attempt {attempt + 1}: Failed to fetch {game_id}: {e}")
+            time.sleep(backoff)
+            backoff *= 2
 
     logging.error(f"Failed to fetch play-by-play data for game {game_id} after {retries} attempts.")
     return None
 
-async def parse_play_by_play(data: Dict[str, Any], game_id: int, date: str) -> pd.DataFrame:
+def parse_play_by_play(data: Dict[str, Any], game_id: int, date: str) -> pd.DataFrame:
     """Extract play-by-play data from the API response."""
     if not data or "periods" not in data:
         return pd.DataFrame()
@@ -92,8 +92,8 @@ async def parse_play_by_play(data: Dict[str, Any], game_id: int, date: str) -> p
 
     return pd.DataFrame(play_list)
 
-async def scrape_play_by_play(sport: str, division: str, year: int, game_id: Optional[int] = None):
-    """Scrape play-by-play data asynchronously."""
+def scrape_play_by_play(sport: str, division: str, year: int, game_id: Optional[int] = None):
+    """Scrape play-by-play data."""
     game_file = DATA_DIR / f"ncaab_{year}_{sport}_{division}.csv"
     if not game_file.exists():
         logging.error(f"Game data file not found: {game_file}")
@@ -102,14 +102,13 @@ async def scrape_play_by_play(sport: str, division: str, year: int, game_id: Opt
     game_data = pd.read_csv(game_file)
     game_ids = game_data[game_data["url"] == str(game_id)] if game_id else game_data
 
-    async with aiohttp.ClientSession() as session:
-        tasks = [fetch_play_by_play(session, row["url"]) for _, row in game_ids.iterrows()]
-        responses = await tqdm.gather(*tasks)
-
     all_data = []
-    for response, (_, row) in zip(responses, game_ids.iterrows()):
+    
+    # Process games with progress bar
+    for _, row in tqdm(game_ids.iterrows(), total=len(game_ids), desc="Fetching play-by-play data"):
+        response = fetch_play_by_play(row["url"])
         if response:
-            df = await parse_play_by_play(response, row["url"], row["date"])
+            df = parse_play_by_play(response, row["url"], row["date"])
             if not df.empty:
                 all_data.append(df)
         else:
@@ -124,8 +123,8 @@ async def scrape_play_by_play(sport: str, division: str, year: int, game_id: Opt
         logging.warning("No play-by-play data was collected.")
 
 
-async def main():
-    parser = argparse.ArgumentParser(description="Scrape NCAA play-by-play data asynchronously.")
+def main():
+    parser = argparse.ArgumentParser(description="Scrape NCAA play-by-play data.")
     parser.add_argument("--sport", type=str, choices=["men", "women"], default="men", help="Sport category: men or women (default: men)")
     parser.add_argument("--division", type=str, choices=["d1", "d2", "d3"], default="d1", help="NCAA division (default: d1)")
     parser.add_argument("--year", type=int, required=True, help="Year to scrape data for")
@@ -139,7 +138,7 @@ async def main():
         format="%(asctime)s - %(levelname)s - %(message)s",
     )
     
-    await scrape_play_by_play(args.sport, args.division, args.year, args.game_id)
+    scrape_play_by_play(args.sport, args.division, args.year, args.game_id)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
