@@ -3,30 +3,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import pandas as pd
 import numpy as np
-
-class SeasonDF(TypedDict):
-    gameID: int
-    date: str
-    home_team: str
-    away_team: str
-    home_score: int
-    away_score: int
-    finalMessage: str
-    start_time: str
-    url: str
-    conference_home: str
-    conference_away: str
-
-@dataclass(frozen=True)
-class EncodedSeason:
-    home_idx: jnp.ndarray     # shape (n_games,), int32
-    away_idx: jnp.ndarray     # shape (n_games,), int32
-    y_home: jnp.ndarray       # shape (n_games,), int32
-    y_away: jnp.ndarray       # shape (n_games,), int32
-    n_teams: int
-    id_to_team: List[str]
-    team_to_id: Dict[str, int]
-
+from utils.enums import EncodedSeason, SeasonDF
 
 def _normalize_team_name(name: str) -> str:
     # light normalization to avoid accidental dupes

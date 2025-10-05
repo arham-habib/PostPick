@@ -8,6 +8,7 @@ from utils.enums import EncodedSeason
 
 """
 Vanilla model with home advantage and team-level effects
+
 TODO: 
 - Add team-level epsilon and global epsilon
 """
@@ -36,8 +37,8 @@ def hierarchal_model(
         defense = numpyro.sample("defense", dist.Normal(0.0, sigma_def))
 
     # Linear predictors
-    eta_home = alpha + offense[home_idx] - defense[away_idx] + h[home_idx]
-    eta_away = alpha + offense[away_idx] - defense[home_idx]
+    eta_home = alpha + offense[home_idx] - defense[away_idx] + h[home_idx] #type: ignore
+    eta_away = alpha + offense[away_idx] - defense[home_idx] #type: ignore
 
     # Likelihood
     numpyro.sample("y_home", dist.Poisson(jnp.exp(eta_home)), obs=y_home)
