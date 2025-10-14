@@ -3,7 +3,7 @@ from dataclasses import dataclass
 import jax.numpy as jnp
 import pandas as pd
 import numpy as np
-from utils.enums import EncodedSeason, SeasonDF
+from src.utils.enums import EncodedSeason, SeasonDF
 
 def _normalize_team_name(name: str) -> str:
     # light normalization to avoid accidental dupes

@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
-from utils.enums import EncodedSeason
+from src.utils.enums import EncodedSeason
 
 
 """
@@ -30,15 +30,18 @@ def hierarchal_model(
     # League-level home advantage mean
     h_mu = numpyro.sample("h_mu", dist.Normal(0.0, 1.0))
 
+    # team-level effects
     with numpyro.plate("team", n_teams):
-        # Team-level effects drawn from distributions (not values)
         h       = numpyro.sample("h",       dist.Normal(h_mu, tau_h))
-        offense = numpyro.sample("offense", dist.Normal(0.0, sigma_off))
-        defense = numpyro.sample("defense", dist.Normal(0.0, sigma_def))
+        offense_uncentered: jnp.ndarray = numpyro.sample("offense", dist.Normal(0.0, sigma_off)) # type: ignore
+        defense_uncentered: jnp.ndarray = numpyro.sample("defense", dist.Normal(0.0, sigma_def)) # type: ignore
+
+    offense = offense_uncentered - offense_uncentered.mean()
+    defense = defense_uncentered - defense_uncentered.mean()
 
     # Linear predictors
-    eta_home = alpha + offense[home_idx] - defense[away_idx] + h[home_idx] #type: ignore
-    eta_away = alpha + offense[away_idx] - defense[home_idx] #type: ignore
+    eta_home = alpha + offense[home_idx] - defense[away_idx] + h[home_idx]      # type: ignore
+    eta_away = alpha + offense[away_idx] - defense[home_idx]                    # type: ignore
 
     # Likelihood
     numpyro.sample("y_home", dist.Poisson(jnp.exp(eta_home)), obs=y_home)
