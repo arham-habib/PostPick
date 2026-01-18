@@ -1,0 +1,60 @@
+{
+  "metadata": {
+    "unknown_teams": [
+      "Mid-Atlantic Christ.",
+      "Blackburn",
+      "Elizabeth City St.",
+      "Morehouse"
+    ],
+    "n_unknown_teams": 4,
+    "n_teams_in_model": 372,
+    "cache_name": "model_2026-01-12",
+    "n_teams": 372,
+    "n_games": 2875,
+    "num_chains": 2,
+    "num_warmup": 100,
+    "num_samples": 300,
+    "fitted_at": "2026-01-13T22:04:08.922077",
+    "sport": "men",
+    "division": "d1",
+    "season_year": 2025,
+    "training_year": 2025,
+    "n_draws_per_sample": 100,
+    "n_teams_in_training": 372,
+    "min_games_per_team": 5
+  },
+  "summary_statistics": {
+    "covariance_matrix": [
+      [
+        239.88472735693023,
+        13.976454176356839
+      ],
+      [
+        13.976454176356839,
+        309.56894489390146
+      ]
+    ],
+    "correlation": 0.051288147406589005,
+    "spread": {
+      "mean": 2.6656852582159623,
+      "std": 15.488212165861501,
+      "p5": -23.0,
+      "p25": -8.0,
+      "p50": 3.0,
+      "p75": 13.0,
+      "p95": 28.0
+    },
+    "total": {
+      "mean": 150.2887476056338,
+      "std": 17.59457104791551,
+      "p5": 122.0,
+      "p25": 138.0,
+      "p50": 150.0,
+      "p75": 162.0,
+      "p95": 180.0
+    },
+    "n_observations": 21300000
+  },
+  "generated_at": "2026-01-13T22:52:25.530016",
+  "n_games": 355
+}

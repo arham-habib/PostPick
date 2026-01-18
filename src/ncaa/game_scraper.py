@@ -91,7 +91,7 @@ def scrape_games(sport: str, division: str, year: int):
     
     for day in tqdm(date_range, desc="Scraping games"):
         date_str = day.strftime("%Y-%m-%d")
-        data = fetch_game_data(sport, division, year, date_str)
+        data = fetch_game_data(sport, division, date_str)
         df = parse_games(data, date_str)
         
         if not df.empty:
