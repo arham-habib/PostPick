@@ -8,17 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any
 
-# Get the absolute path of the script's directory
-SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = SCRIPT_DIR / "data"
-LOG_DIR = SCRIPT_DIR / "logs"
-SCRAPING_DIR = SCRIPT_DIR / "src/ncaa"
-BASE_URL = "https://ncaa-api.henrygd.me/scoreboard/basketball-{}/{}/{}/{}/{}/all-conf"
+from src.utils.logging_utils import setup_scraping_logger
+from src.utils.data_utils import get_game_data_path
 
-# Ensure directories exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
-SCRAPING_DIR.mkdir(parents=True, exist_ok=True)
+BASE_URL = "https://ncaa-api.henrygd.me/scoreboard/basketball-{}/{}/{}/{}/{}/all-conf"
 
 
 def fetch_game_data(sport: str, division: str, date_str: str) -> Optional[Dict[str, Any]]:
@@ -81,7 +74,6 @@ def parse_games(data: Dict[str, Any], date_str: str) -> pd.DataFrame:
 
 def scrape_games(sport: str, division: str, year: int):
     """Scrape all game data for the given year."""
-    file_str = f"ncaab_{year}_{sport}_{division}.csv"
     start_date = datetime(year, 11, 1)
     end_date = datetime(year + 1, 4, 10)
     all_data = []
@@ -104,8 +96,9 @@ def scrape_games(sport: str, division: str, year: int):
     # Save results
     if all_data:
         full_df = pd.concat(all_data, ignore_index=True)
-        full_df.to_csv(DATA_DIR / file_str, index=False)
-        logging.info(f"Saved {len(full_df)} games to {file_str}")
+        output_path = get_game_data_path("ncaab", year, sport, division)
+        full_df.to_csv(output_path, index=False)
+        logging.info(f"Saved {len(full_df)} games to {output_path}")
     else:
         logging.warning(f"No data scraped for {sport} {division} {year}")
 
@@ -117,11 +110,8 @@ def main():
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        filename=LOG_DIR / f"ncaab_{args.year}_{args.sport}_{args.division}.log",
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
+    # Setup structured logging
+    setup_scraping_logger("ncaab", "game")
     
     scrape_games(args.sport, args.division, args.year)
 

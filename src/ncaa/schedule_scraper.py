@@ -8,15 +8,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-# Get the absolute path of the script's directory
-SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = SCRIPT_DIR / "data" / "ncaa" / "schedule"
-LOG_DIR = SCRIPT_DIR / "logs"
-BASE_URL = "https://ncaa-api.henrygd.me/scoreboard/basketball-{}/{}/{}/{}/{}/all-conf"
+from src.utils.logging_utils import setup_scraping_logger
+from src.utils.data_utils import get_schedule_data_path
 
-# Ensure directories exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+BASE_URL = "https://ncaa-api.henrygd.me/scoreboard/basketball-{}/{}/{}/{}/{}/all-conf"
 
 # Rate limiting
 REQUEST_DELAY = 0.25  # 250ms between requests
@@ -101,8 +96,6 @@ def scrape_schedule(sport: str, division: str, year: int, start_month: int = 11,
     start_month: First month to scrape (default: 11 for November)
     end_month: Last month to scrape (default: 4 for April, in the next year)
     """
-    file_str = f"schedule_{year}_{sport}_{division}.csv"
-    
     # Generate date range for the season
     start_date = datetime(year, start_month, 1)
     end_date = datetime(year + 1, end_month, 30) if end_month < start_month else datetime(year, end_month, 30)
@@ -132,9 +125,9 @@ def scrape_schedule(sport: str, division: str, year: int, start_month: int = 11,
         if "date" in full_df.columns:
             full_df = full_df.sort_values("date").reset_index(drop=True)
         
-        output_file = DATA_DIR / file_str
+        output_file = get_schedule_data_path("ncaab", year, sport, division)
         full_df.to_csv(output_file, index=False)
-        logging.info(f"Saved {len(full_df)} scheduled games to {file_str}")
+        logging.info(f"Saved {len(full_df)} scheduled games to {output_file}")
         print(f"✓ Saved {len(full_df)} scheduled games to {output_file}")
     else:
         logging.warning(f"No scheduled games found for {sport} {division} {year}")
@@ -156,11 +149,8 @@ def main():
 
     args = parser.parse_args()
 
-    logging.basicConfig(
-        filename=LOG_DIR / f"schedule_{args.year}_{args.sport}_{args.division}.log",
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s"
-    )
+    # Setup structured logging
+    setup_scraping_logger("ncaab", "schedule")
     
     scrape_schedule(args.sport, args.division, args.year, args.start_month, args.end_month)
 

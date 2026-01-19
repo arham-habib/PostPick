@@ -34,4 +34,5 @@ dependencies = [
     "jax-metal>=0.1.0",
     "numpyro>=0.15.0",
     "streamlit>=1.28.0",
+    "pyarrow>=14.0.0",
 ]

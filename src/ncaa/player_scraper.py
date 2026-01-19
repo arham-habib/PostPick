@@ -11,14 +11,10 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 from aiolimiter import AsyncLimiter
 
-BASE_URL = "https://ncaa-api.henrygd.me/game/{}/boxscore"
-SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parent / "data"
-LOG_DIR = SCRIPT_DIR.parent / "logs"
+from src.utils.logging_utils import setup_scraping_logger
+from src.utils.data_utils import get_player_data_path, get_game_data_path
 
-# Ensure directories exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+BASE_URL = "https://ncaa-api.henrygd.me/game/{}/boxscore"
 
 # Rate limiter (4 requests per second)
 RATE_LIMITER = AsyncLimiter(4, 1)
@@ -90,7 +86,7 @@ async def parse_box_scores(data: Dict[str, Any], game_id: int, date: str) -> pd.
 
 async def scrape_box_scores(sport: str, division: str, year: int, game_id: Optional[int] = None):
     """Scrape player box scores asynchronously."""
-    game_file = DATA_DIR / f"ncaab_{year}_{sport}_{division}.csv"
+    game_file = get_game_data_path("ncaab", year, sport, division)
     if not game_file.exists():
         logging.error(f"Game data file not found: {game_file}")
         raise FileNotFoundError(f"Missing game data file: {game_file}")
@@ -113,8 +109,9 @@ async def scrape_box_scores(sport: str, division: str, year: int, game_id: Optio
 
     if all_data:
         full_df = pd.concat(all_data, ignore_index=True)
-        full_df.to_csv(DATA_DIR / f"box_score_{sport}_{year}_{division}.csv", index=False)
-        logging.info(f"Saved all box scores data ({len(full_df)} rows) to box_scores_{sport}_{year}_{division}.csv.")
+        output_path = get_player_data_path("ncaab", year, sport, division)
+        full_df.to_csv(output_path, index=False)
+        logging.info(f"Saved all box scores data ({len(full_df)} rows) to {output_path}.")
 
 
 async def main():
@@ -126,11 +123,8 @@ async def main():
     
     args = parser.parse_args()
     
-    logging.basicConfig(
-        filename=LOG_DIR / f"box_score_{args.year}_{args.sport}_{args.division}.log",
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+    # Setup structured logging
+    setup_scraping_logger("ncaab", "player")
     
     await scrape_box_scores(args.sport, args.division, args.year, args.game_id)
 

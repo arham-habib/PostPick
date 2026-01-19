@@ -9,14 +9,10 @@ from tqdm import tqdm
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
-BASE_URL = "https://ncaa-api.henrygd.me/game/{}/play-by-play"
-SCRIPT_DIR = Path(__file__).resolve().parent
-DATA_DIR = SCRIPT_DIR.parent.parent / "data"
-LOG_DIR = SCRIPT_DIR.parent.parent / "logs"
+from src.utils.logging_utils import setup_scraping_logger
+from src.utils.data_utils import get_pbp_data_path, get_game_data_path
 
-# Ensure directories exist
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+BASE_URL = "https://ncaa-api.henrygd.me/game/{}/play-by-play"
 
 # Rate limiting: 4 requests per second
 REQUEST_DELAY = 0.25  # 250ms between requests
@@ -94,7 +90,7 @@ def parse_play_by_play(data: Dict[str, Any], game_id: int, date: str) -> pd.Data
 
 def scrape_play_by_play(sport: str, division: str, year: int, game_id: Optional[int] = None):
     """Scrape play-by-play data."""
-    game_file = DATA_DIR / f"ncaab_{year}_{sport}_{division}.csv"
+    game_file = get_game_data_path("ncaab", year, sport, division)
     if not game_file.exists():
         logging.error(f"Game data file not found: {game_file}")
         raise FileNotFoundError(f"Missing game data file: {game_file}")
@@ -116,7 +112,7 @@ def scrape_play_by_play(sport: str, division: str, year: int, game_id: Optional[
 
     if all_data:
         full_df = pd.concat(all_data, ignore_index=True)
-        output_file = DATA_DIR / f"play_by_play_{sport}_{year}_{division}.csv"
+        output_file = get_pbp_data_path("ncaab", year, sport, division)
         full_df.to_csv(output_file, index=False)
         logging.info(f"Saved all play-by-play data ({len(full_df)} rows) to {output_file}.")
     else:
@@ -132,11 +128,8 @@ def main():
     
     args = parser.parse_args()
     
-    logging.basicConfig(
-        filename=LOG_DIR / f"play_by_play_{args.year}_{args.sport}_{args.division}.log",
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-    )
+    # Setup structured logging
+    setup_scraping_logger("ncaab", "pbp")
     
     scrape_play_by_play(args.sport, args.division, args.year, args.game_id)
 
