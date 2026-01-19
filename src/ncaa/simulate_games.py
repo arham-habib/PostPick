@@ -128,13 +128,15 @@ def filter_next_week_games(schedule_df: pd.DataFrame, cutoff_monday: str) -> pd.
     schedule_df["date"] = pd.to_datetime(schedule_df["date"])
     
     cutoff_date = pd.to_datetime(cutoff_monday)
-    week_end = cutoff_date + pd.Timedelta(days=6)  # Sunday
+    # Start from the Monday AFTER the cutoff Monday (next week)
+    week_start = cutoff_date + pd.Timedelta(days=7)
+    week_end = week_start + pd.Timedelta(days=6)  # Sunday of next week
     
-    # Filter: games on cutoff Monday through following Sunday
-    mask = (schedule_df["date"] >= cutoff_date) & (schedule_df["date"] <= week_end)  # type: ignore
+    # Filter: games from next Monday through following Sunday
+    mask = (schedule_df["date"] >= week_start) & (schedule_df["date"] <= week_end)  # type: ignore
     next_week = schedule_df[mask].copy()  # type: ignore
     
-    logging.info(f"Found {len(next_week)} games in next week (Monday-Sunday) out of {len(schedule_df)} total scheduled")
+    logging.info(f"Found {len(next_week)} games in next week ({week_start.date()} to {week_end.date()}) out of {len(schedule_df)} total scheduled")
     return next_week  # type: ignore
 
 
@@ -531,8 +533,8 @@ def main():
         help="Minimum number of games per team to include in training (default: 10)"
     )
     parser.add_argument(
-        "--n-sims", type=int, default=250,
-        help="Number of non-tie simulations per parameter draw per game (default: 250)"
+        "--n-sims", type=int, default=20,
+        help="Number of non-tie simulations per parameter draw per game (default: 20)"
     )
     parser.add_argument(
         "--num-chains", type=int, default=2,
