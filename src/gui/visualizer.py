@@ -6,6 +6,7 @@ with spread, total, and moneyline metrics.
 """
 import streamlit as st
 import pandas as pd
+import numpy as np
 from pathlib import Path
 from datetime import datetime
 import re
@@ -14,7 +15,7 @@ from typing import List, Tuple, Optional, Dict
 # Get project root
 SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 DATA_DIR = SCRIPT_DIR / "data"
-SIMULATIONS_DIR = DATA_DIR / "simulations"
+SIMULATIONS_DIR = DATA_DIR / "ncaab" / "simulations"
 
 # Page configuration
 st.set_page_config(
@@ -24,56 +25,140 @@ st.set_page_config(
 )
 
 
+def aggregate_simulation_data(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate raw simulation data to compute statistics per game.
+    
+    Args:
+        df: DataFrame with columns: game_id, date, home_team, away_team, 
+            param_draw_idx, sim_idx, home_score, away_score, spread, total
+    
+    Returns:
+        DataFrame with aggregated statistics per game
+    """
+    if df.empty:
+        return df
+    
+    # Group by game - use game_id as primary key, include other fields for reference
+    # If game_id is not unique, fall back to grouping by all identifying fields
+    group_cols = ['game_id', 'home_team', 'away_team']
+    if 'date' in df.columns:
+        group_cols.append('date')
+    
+    grouped = df.groupby(group_cols)
+    
+    results = []
+    for group_key, group in grouped:
+        # Unpack group key based on number of columns
+        if len(group_cols) == 4:
+            game_id, home_team, away_team, date = group_key
+        else:
+            game_id, home_team, away_team = group_key
+            date = group['date'].iloc[0] if 'date' in group.columns else None
+        
+        spreads = group['spread'].values
+        totals = group['total'].values
+        home_scores = group['home_score'].values
+        away_scores = group['away_score'].values
+        
+        # Compute spread percentiles
+        spread_p5 = float(np.percentile(spreads, 5))
+        spread_p50 = float(np.percentile(spreads, 50))
+        spread_p95 = float(np.percentile(spreads, 95))
+        
+        # Compute total percentiles
+        total_p5 = float(np.percentile(totals, 5))
+        total_p50 = float(np.percentile(totals, 50))
+        total_p95 = float(np.percentile(totals, 95))
+        
+        # Compute moneyline probabilities
+        home_wins = (home_scores > away_scores).sum()
+        away_wins = (away_scores > home_scores).sum()
+        total_sims = len(group)
+        
+        moneyline_home_win = float(home_wins / total_sims) if total_sims > 0 else 0.0
+        moneyline_away_win = float(away_wins / total_sims) if total_sims > 0 else 0.0
+        
+        result = {
+            'game_id': game_id,
+            'home_team': home_team,
+            'away_team': away_team,
+            'spread_p5': spread_p5,
+            'spread_p50': spread_p50,
+            'spread_p95': spread_p95,
+            'total_p5': total_p5,
+            'total_p50': total_p50,
+            'total_p95': total_p95,
+            'moneyline_home_win': moneyline_home_win,
+            'moneyline_away_win': moneyline_away_win,
+        }
+        
+        if date is not None:
+            result['date'] = date
+        
+        results.append(result)
+    
+    return pd.DataFrame(results)
+
+
 def get_available_combinations() -> List[Dict[str, str]]:
     """
     Scan simulations directory for available simulation files.
     
     Returns:
-        List of dicts with 'year', 'sport', 'division' keys
+        List of dicts with 'model_name', 'monday_date', 'file_path' keys
     """
     combinations = []
-    pattern = re.compile(r"game_simulations_(\d{4})_(men|women)_(d[123])\.csv")
+    pattern = re.compile(r"([A-Za-z]+)_(\d{4}-\d{2}-\d{2})\.parquet")
     
     if not SIMULATIONS_DIR.exists():
         return combinations
     
-    for file_path in SIMULATIONS_DIR.glob("game_simulations_*.csv"):
+    for file_path in SIMULATIONS_DIR.glob("*.parquet"):
         match = pattern.match(file_path.name)
         if match:
-            year, sport, division = match.groups()
+            model_name, monday_date = match.groups()
             combinations.append({
-                "year": year,
-                "sport": sport,
-                "division": division,
+                "model_name": model_name,
+                "monday_date": monday_date,
                 "file_path": file_path
             })
     
-    return sorted(combinations, key=lambda x: (x["year"], x["sport"], x["division"]))
+    return sorted(combinations, key=lambda x: (x["monday_date"], x["model_name"]), reverse=True)
 
 
-def load_simulation_data(sport: str, division: str, year: str) -> Optional[pd.DataFrame]:
+def load_simulation_data(model_name: str, monday_date: str) -> Optional[pd.DataFrame]:
     """
-    Load simulation data from CSV file.
+    Load and aggregate simulation data from parquet file.
     
     Args:
-        sport: "men" or "women"
-        division: "d1", "d2", or "d3"
-        year: Year as string (e.g., "2025")
+        model_name: Name of the model (e.g., "Vanilla", "TeamVol")
+        monday_date: Monday date string (e.g., "2026-01-15")
     
     Returns:
-        DataFrame with simulation results or None if file not found
+        DataFrame with aggregated simulation results or None if file not found
     """
-    file_path = SIMULATIONS_DIR / f"game_simulations_{year}_{sport}_{division}.csv"
+    file_path = SIMULATIONS_DIR / f"{model_name}_{monday_date}.parquet"
     
     if not file_path.exists():
         return None
     
     try:
-        df = pd.read_csv(file_path)
+        # Load raw simulation data
+        df = pd.read_parquet(file_path)
+        
         # Convert date column to datetime
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"])
-        return df
+        
+        # Aggregate simulation data
+        aggregated_df = aggregate_simulation_data(df)
+        
+        # Convert date back to datetime if needed
+        if "date" in aggregated_df.columns:
+            aggregated_df["date"] = pd.to_datetime(aggregated_df["date"])
+        
+        return aggregated_df
     except Exception as e:
         st.error(f"Error loading data: {e}")
         return None
@@ -156,51 +241,45 @@ def main():
         st.header("Filters")
         
         # Extract unique values
-        years = sorted(set(c["year"] for c in combinations), reverse=True)
-        sports = sorted(set(c["sport"] for c in combinations))
-        divisions = sorted(set(c["division"] for c in combinations))
+        models = sorted(set(c["model_name"] for c in combinations))
+        monday_dates = sorted(set(c["monday_date"] for c in combinations), reverse=True)
         
-        # Year selector
-        selected_year = st.selectbox(
-            "Year",
-            options=years,
+        # Model selector
+        selected_model = st.selectbox(
+            "Model",
+            options=models,
             index=0
         )
         
-        # Filter combinations by year
-        year_combinations = [c for c in combinations if c["year"] == selected_year]
-        
-        if not year_combinations:
-            st.warning(f"No data available for year {selected_year}")
-            return
-        
-        # Sport selector
-        available_sports = sorted(set(c["sport"] for c in year_combinations))
-        selected_sport = st.selectbox(
-            "Sport",
-            options=available_sports,
-            index=0 if "men" in available_sports else 0
-        )
-        
-        # Division selector
-        available_divisions = sorted(set(
-            c["division"] for c in year_combinations 
-            if c["sport"] == selected_sport
-        ))
-        selected_division = st.selectbox(
-            "Division",
-            options=available_divisions,
+        # Monday date selector
+        selected_monday_date = st.selectbox(
+            "Monday Date",
+            options=monday_dates,
             index=0
         )
         
         st.markdown("---")
         
         # Load data
-        df = load_simulation_data(selected_sport, selected_division, selected_year)
+        df = load_simulation_data(selected_model, selected_monday_date)
         
         if df is None or df.empty:
-            st.error(f"No data found for {selected_sport} {selected_division} {selected_year}")
+            st.error(f"No data found for {selected_model} {selected_monday_date}")
             return
+        
+        # Extract year from dates for display
+        if "date" in df.columns and not df["date"].isna().all():
+            df_with_dates = df[df["date"].notna()].copy()
+            if not df_with_dates.empty:
+                years = sorted(df_with_dates["date"].dt.year.unique(), reverse=True)
+                if years:
+                    selected_year = years[0]  # Use most recent year
+                else:
+                    selected_year = None
+            else:
+                selected_year = None
+        else:
+            selected_year = None
         
         # Date range filter
         has_dates = "date" in df.columns and bool(df["date"].notna().any())
@@ -275,7 +354,8 @@ def main():
             df = df.sort_values(by="moneyline_away_win", ascending=False)
     
     # Display header
-    st.header(f"{selected_sport.title()} {selected_division.upper()} {selected_year}")
+    year_str = f" {selected_year}" if selected_year else ""
+    st.header(f"{selected_model} Model - {selected_monday_date}{year_str}")
     
     # Format and display data as table
     if isinstance(df, pd.DataFrame) and not df.empty:

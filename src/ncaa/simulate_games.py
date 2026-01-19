@@ -5,6 +5,12 @@ This module implements simulation of upcoming NCAA basketball games using
 a fitted hierarchical Bayesian model. Supports multiple model flavors with
 sport-specific storage organization and vectorized simulation.
 """
+import os
+# Force CPU backend to avoid Metal backend issues with NumPyro HMC
+# Metal doesn't support all operations (e.g., bitwise_count/popcnt) needed by NumPyro
+# This must be set BEFORE importing JAX
+os.environ["JAX_PLATFORMS"] = "cpu"
+
 import logging
 import argparse
 import pickle
@@ -290,7 +296,7 @@ def simulate_games(games_df: pd.DataFrame, samples: Dict[str, jnp.ndarray],
     
     # Dynamically import model-specific simulator
     model_module = importlib.import_module(f"src.models.{model_name}")
-    simulate_func = getattr(model_module, 'simulate_games')
+    simulate_batch_func = getattr(model_module, 'simulate_games_batch')
     
     n_param_draws = samples['alpha'].shape[0]
     n_games = len(games_df)
@@ -303,6 +309,10 @@ def simulate_games(games_df: pd.DataFrame, samples: Dict[str, jnp.ndarray],
     
     # Ensure rng_key is not None
     current_rng_key = rng_key if rng_key is not None else random.PRNGKey(42)
+    
+    # Determine number of rng keys needed per game based on model
+    # Vanilla needs 2 keys per game, TeamVol needs 4
+    n_keys_per_game = 4 if model_name == "TeamVol" else 2
     
     # Vectorized simulation - generates n_sims per param draw per game
     # We need to simulate more to account for ties, then filter
@@ -320,66 +330,170 @@ def simulate_games(games_df: pd.DataFrame, samples: Dict[str, jnp.ndarray],
         # Get single parameter draw
         param_draw_samples = {k: v[param_draw_idx] for k, v in samples.items()}
         
-        # Keep simulating until we have enough non-ties per game
-        home_scores_per_game = [[] for _ in range(n_games)]
-        away_scores_per_game = [[] for _ in range(n_games)]
-        sim_count = 0
+        # Extract parameters
+        alpha = float(param_draw_samples['alpha'])
+        offense = param_draw_samples['offense']
+        defense = param_draw_samples['defense']
+        h = param_draw_samples['h']
         
-        while any(len(scores) < n_sims for scores in home_scores_per_game) and sim_count < n_sims_with_ties * 2:
-            batch_rng_key, current_rng_key = random.split(current_rng_key)
+        # Simulate a large batch at once to account for ties, then filter vectorized
+        # Simulate ~30% more to account for ties (typically ties are rare in basketball)
+        batch_size = int(n_sims * 1.3)
+        
+        # Generate all random keys upfront for the batch
+        keys_split = random.split(current_rng_key, batch_size + 1)
+        current_rng_key = keys_split[0]
+        batch_keys = keys_split[1:]
+        
+        # For each simulation in the batch, generate keys for all games
+        all_home_batch = []
+        all_away_batch = []
+        
+        for batch_idx in range(batch_size):
+            batch_rng_key = batch_keys[batch_idx]
+            
+            # Generate rng keys for all games: [n_games, n_keys_per_game, 2]
+            game_base_keys = random.split(batch_rng_key, n_games)  # Shape: (n_games, 2)
+            
+            # For each game, split the base key into n_keys_per_game subkeys
+            game_keys_list = []
+            for i in range(n_games):
+                subkeys = random.split(game_base_keys[i], n_keys_per_game)  # Shape: (n_keys_per_game, 2)
+                game_keys_list.append(subkeys)
+            game_keys = jnp.stack(game_keys_list)  # Shape: (n_games, n_keys_per_game, 2)
             
             # Vectorized simulation for all games
-            batch_home, batch_away = simulate_func(
-                home_indices, away_indices, param_draw_samples, 1, batch_rng_key
-            )
+            if model_name == "TeamVol":
+                batch_home, batch_away = simulate_batch_func(
+                    home_indices, away_indices, alpha, offense, defense, h,
+                    param_draw_samples['team_off_std'], param_draw_samples['team_def_std'],
+                    game_keys
+                )
+            else:  # Vanilla
+                batch_home, batch_away = simulate_batch_func(
+                    home_indices, away_indices, alpha, offense, defense, h, game_keys
+                )
             
-            # Filter ties and collect non-ties per game
-            for game_idx in range(n_games):
-                if len(home_scores_per_game[game_idx]) < n_sims:
-                    home_score = int(batch_home[game_idx])
-                    away_score = int(batch_away[game_idx])
-                    if home_score != away_score:  # Discard ties
-                        home_scores_per_game[game_idx].append(home_score)
-                        away_scores_per_game[game_idx].append(away_score)
-            
-            sim_count += 1
+            all_home_batch.append(batch_home)
+            all_away_batch.append(batch_away)
         
-        # Pad with last value if needed (shouldn't happen often)
+        # Stack all simulations: [batch_size, n_games]
+        home_scores_all = jnp.stack(all_home_batch)  # Shape: (batch_size, n_games)
+        away_scores_all = jnp.stack(all_away_batch)  # Shape: (batch_size, n_games)
+        
+        # Filter ties vectorized: [batch_size, n_games] boolean mask
+        non_ties = home_scores_all != away_scores_all  # Shape: (batch_size, n_games)
+        
+        # For each game, take first n_sims non-ties
+        # Transpose for easier per-game processing: [n_games, batch_size]
+        home_scores_per_game = []
+        away_scores_per_game = []
+        
         for game_idx in range(n_games):
-            while len(home_scores_per_game[game_idx]) < n_sims:
-                if len(home_scores_per_game[game_idx]) > 0:
-                    home_scores_per_game[game_idx].append(home_scores_per_game[game_idx][-1])
-                    away_scores_per_game[game_idx].append(away_scores_per_game[game_idx][-1])
+            game_home = home_scores_all[:, game_idx]  # Shape: (batch_size,)
+            game_away = away_scores_all[:, game_idx]  # Shape: (batch_size,)
+            game_non_ties = non_ties[:, game_idx]  # Shape: (batch_size,)
+            
+            # Find indices where non-tie
+            non_tie_mask = game_non_ties
+            n_non_ties = jnp.sum(non_tie_mask)
+            
+            if n_non_ties >= n_sims:
+                # Take first n_sims non-ties
+                non_tie_idx = 0
+                selected_home = []
+                selected_away = []
+                for i in range(batch_size):
+                    if non_tie_mask[i] and non_tie_idx < n_sims:
+                        selected_home.append(game_home[i])
+                        selected_away.append(game_away[i])
+                        non_tie_idx += 1
+                    if non_tie_idx >= n_sims:
+                        break
+                
+                home_scores_per_game.append(jnp.array(selected_home[:n_sims]))
+                away_scores_per_game.append(jnp.array(selected_away[:n_sims]))
+            else:
+                # Not enough non-ties - take what we have and pad
+                selected_home = game_home[non_tie_mask]
+                selected_away = game_away[non_tie_mask]
+                
+                if len(selected_home) > 0:
+                    # Pad with last value
+                    last_home = selected_home[-1]
+                    last_away = selected_away[-1]
+                    padding_size = n_sims - len(selected_home)
+                    padding_home = jnp.full((padding_size,), last_home, dtype=jnp.int32)
+                    padding_away = jnp.full((padding_size,), last_away, dtype=jnp.int32)
+                    selected_home = jnp.concatenate([selected_home, padding_home])
+                    selected_away = jnp.concatenate([selected_away, padding_away])
+                else:
+                    # All ties - use zeros (shouldn't happen in basketball)
+                    selected_home = jnp.zeros(n_sims, dtype=jnp.int32)
+                    selected_away = jnp.zeros(n_sims, dtype=jnp.int32)
+                
+                home_scores_per_game.append(selected_home)
+                away_scores_per_game.append(selected_away)
         
-        all_home_scores_list.append(jnp.array([scores[:n_sims] for scores in home_scores_per_game]))
-        all_away_scores_list.append(jnp.array([scores[:n_sims] for scores in away_scores_per_game]))
+        all_home_scores_list.append(jnp.stack(home_scores_per_game))  # Shape: (n_games, n_sims)
+        all_away_scores_list.append(jnp.stack(away_scores_per_game))  # Shape: (n_games, n_sims)
     
     # Stack all parameter draws: [n_param_draws, n_games, n_sims]
+    sim_log.info("Stacking all simulation results...")
     all_home_scores = jnp.stack(all_home_scores_list)
     all_away_scores = jnp.stack(all_away_scores_list)
     
-    # Build results DataFrame
-    results = []
+    # Build results DataFrame more efficiently
+    sim_log.info(f"Building results DataFrame from {n_param_draws * n_games * n_sims:,} simulations...")
+    
+    # Convert to numpy for faster iteration
+    home_scores_np = np.array(all_home_scores)
+    away_scores_np = np.array(all_away_scores)
+    
+    # Pre-allocate arrays for better performance
+    n_total = n_param_draws * n_games * n_sims
+    results_dict = {
+        'game_id': np.empty(n_total, dtype=object),
+        'date': np.empty(n_total, dtype=object),
+        'home_team': np.empty(n_total, dtype=object),
+        'away_team': np.empty(n_total, dtype=object),
+        'param_draw_idx': np.empty(n_total, dtype=np.int32),
+        'sim_idx': np.empty(n_total, dtype=np.int32),
+        'home_score': np.empty(n_total, dtype=np.int32),
+        'away_score': np.empty(n_total, dtype=np.int32),
+        'spread': np.empty(n_total, dtype=np.int32),
+        'total': np.empty(n_total, dtype=np.int32),
+    }
+    
+    idx = 0
     for param_draw_idx in range(n_param_draws):
         for game_idx, (_, game) in enumerate(games_df.iterrows()):
+            game_id = game.get('gameID', game_idx)
+            date = game.get('date', '')
+            home_team = game['home_team']
+            away_team = game['away_team']
+            
             for sim_idx in range(n_sims):
-                home_score = int(all_home_scores[param_draw_idx, game_idx, sim_idx])
-                away_score = int(all_away_scores[param_draw_idx, game_idx, sim_idx])
+                home_score = int(home_scores_np[param_draw_idx, game_idx, sim_idx])
+                away_score = int(away_scores_np[param_draw_idx, game_idx, sim_idx])
                 
-                results.append({
-                    'game_id': game.get('gameID', game_idx),
-                    'date': game.get('date', ''),
-                    'home_team': game['home_team'],
-                    'away_team': game['away_team'],
-                    'param_draw_idx': param_draw_idx,
-                    'sim_idx': sim_idx,
-                    'home_score': home_score,
-                    'away_score': away_score,
-                    'spread': home_score - away_score,
-                    'total': home_score + away_score,
-                })
+                results_dict['game_id'][idx] = game_id
+                results_dict['date'][idx] = date
+                results_dict['home_team'][idx] = home_team
+                results_dict['away_team'][idx] = away_team
+                results_dict['param_draw_idx'][idx] = param_draw_idx
+                results_dict['sim_idx'][idx] = sim_idx
+                results_dict['home_score'][idx] = home_score
+                results_dict['away_score'][idx] = away_score
+                results_dict['spread'][idx] = home_score - away_score
+                results_dict['total'][idx] = home_score + away_score
+                idx += 1
+            
+            if game_idx % 50 == 0 and param_draw_idx == 0:
+                sim_log.info(f"  Processed {game_idx}/{n_games} games for first param draw...")
     
-    return pd.DataFrame(results)
+    sim_log.info("Creating DataFrame from results...")
+    return pd.DataFrame(results_dict)
 
 
 def save_simulations(sport: str, model_name: str, monday_date: str, simulation_df: pd.DataFrame) -> Path:
@@ -413,8 +527,8 @@ def main():
         help="Year of training data (default: same as --year)"
     )
     parser.add_argument(
-        "--min-games", type=int, default=30,
-        help="Minimum number of games per team to include in training (default: 30)"
+        "--min-games", type=int, default=10,
+        help="Minimum number of games per team to include in training (default: 10)"
     )
     parser.add_argument(
         "--n-sims", type=int, default=250,

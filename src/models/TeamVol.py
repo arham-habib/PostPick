@@ -1,3 +1,8 @@
+import os
+# Force CPU backend to avoid Metal backend issues with NumPyro HMC
+# Metal doesn't support all operations (e.g., bitwise_count/popcnt) needed by NumPyro
+os.environ["JAX_PLATFORMS"] = "cpu"
+
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -143,8 +148,10 @@ def simulate_games_batch(
     epsilon_home_stds = home_off_stds + away_def_stds
     epsilon_away_stds = away_off_stds + home_def_stds
     
-    epsilon_home = random.normal(rng_keys[:, 0]) * epsilon_home_stds
-    epsilon_away = random.normal(rng_keys[:, 1]) * epsilon_away_stds
+    # Vectorize random operations over keys using vmap
+    normal_vmap = jax.vmap(random.normal, in_axes=(0,))
+    epsilon_home = normal_vmap(rng_keys[:, 0]) * epsilon_home_stds
+    epsilon_away = normal_vmap(rng_keys[:, 1]) * epsilon_away_stds
     
     # Compute rates for all games
     eta_home = alpha + home_offenses - away_defenses + home_hs + epsilon_home
@@ -153,8 +160,9 @@ def simulate_games_batch(
     lambda_away = jnp.exp(eta_away)
     
     # Sample from Poisson for all games
-    home_scores = random.poisson(rng_keys[:, 2], lambda_home)
-    away_scores = random.poisson(rng_keys[:, 3], lambda_away)
+    poisson_vmap = jax.vmap(random.poisson, in_axes=(0, 0))
+    home_scores = poisson_vmap(rng_keys[:, 2], lambda_home)
+    away_scores = poisson_vmap(rng_keys[:, 3], lambda_away)
     
     return home_scores, away_scores
 

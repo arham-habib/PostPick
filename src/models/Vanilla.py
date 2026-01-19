@@ -1,3 +1,8 @@
+import os
+# Force CPU backend to avoid Metal backend issues with NumPyro HMC
+# Metal doesn't support all operations (e.g., bitwise_count/popcnt) needed by NumPyro
+os.environ["JAX_PLATFORMS"] = "cpu"
+
 import jax
 import jax.numpy as jnp
 from jax import random
@@ -115,8 +120,10 @@ def simulate_games_batch(
     lambda_away = jnp.exp(eta_away)
     
     # Sample from Poisson for all games
-    home_scores = random.poisson(rng_keys[:, 0], lambda_home)
-    away_scores = random.poisson(rng_keys[:, 1], lambda_away)
+    # Vectorize poisson over keys using vmap
+    poisson_vmap = jax.vmap(random.poisson, in_axes=(0, 0))
+    home_scores = poisson_vmap(rng_keys[:, 0], lambda_home)
+    away_scores = poisson_vmap(rng_keys[:, 1], lambda_away)
     
     return home_scores, away_scores
 
