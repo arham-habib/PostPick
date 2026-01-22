@@ -34,8 +34,7 @@ from src.utils.logging_utils import (
 from src.utils.data_utils import (
     get_model_data_path,
     get_simulation_data_path,
-    get_game_data_path,
-    get_schedule_data_path
+    get_game_data_path
 )
 from src.utils.enums import EncodedSeason
 
@@ -71,16 +70,31 @@ def load_training_data(sport: str, year: int) -> pd.DataFrame:
 
 
 def load_schedule(sport: str, year: int) -> pd.DataFrame:
-    """Load scheduled games (assumes d1 division)."""
-    file_path = get_schedule_data_path("ncaab", year, sport, "d1")
+    """Load scheduled games (unfinished games) from game data (assumes d1 division)."""
+    file_path = get_game_data_path("ncaab", year, sport, "d1")
     
     if not file_path.exists():
-        raise FileNotFoundError(f"Schedule file not found: {file_path}")
+        raise FileNotFoundError(f"Game data file not found: {file_path}")
     
-    logging.info(f"Loading scheduled games from {file_path}")
+    logging.info(f"Loading unfinished games from {file_path}")
     df = pd.read_csv(file_path)
-    logging.info(f"Loaded {len(df)} scheduled games")
-    return df
+    
+    # Filter for unfinished games (not FINAL)
+    # Games are unfinished if finalMessage is not "FINAL" or if scores are missing
+    if "finalMessage" in df.columns:
+        unfinished_mask = df["finalMessage"] != "FINAL"
+        unfinished = df[unfinished_mask].copy()
+    else:
+        # Fallback: check if scores are missing
+        unfinished_mask = (df["home_score"].isna()) | (df["away_score"].isna())
+        unfinished = df[unfinished_mask].copy()
+    
+    # Ensure we return a DataFrame
+    if not isinstance(unfinished, pd.DataFrame):
+        unfinished = pd.DataFrame(unfinished)
+    
+    logging.info(f"Loaded {len(unfinished)} unfinished games out of {len(df)} total games")
+    return unfinished
 
 
 def get_latest_monday(date: pd.Timestamp) -> str:
@@ -117,7 +131,7 @@ def get_monday_cutoff(df: pd.DataFrame) -> str:
 def filter_next_week_games(schedule_df: pd.DataFrame, cutoff_monday: str) -> pd.DataFrame:
     """Filter for games in the week starting the day after cutoff Monday.
     
-    If cutoff is Monday 2026-01-19, looks for games from 2026-01-20 to 2026-01-26.
+    If cutoff is Monday 2026-01-19, looks for games from 2026-01-20 to 2026-01-25 (Tuesday through Sunday).
     """
     if schedule_df.empty:
         return schedule_df
@@ -128,10 +142,10 @@ def filter_next_week_games(schedule_df: pd.DataFrame, cutoff_monday: str) -> pd.
     cutoff_date = pd.to_datetime(cutoff_monday)
     # Start from the day AFTER the cutoff Monday (Tuesday)
     week_start = cutoff_date + pd.Timedelta(days=1)
-    # End 6 days later (Sunday, or Monday if we want 7 days total)
-    week_end = cutoff_date + pd.Timedelta(days=7)  # Next Monday (inclusive)
+    # End 6 days later (Sunday, not including the following Monday)
+    week_end = cutoff_date + pd.Timedelta(days=6)  # Sunday (inclusive)
     
-    # Filter: games from Tuesday through next Monday
+    # Filter: games from Tuesday through Sunday
     mask = (schedule_df["date"] >= week_start) & (schedule_df["date"] <= week_end)  # type: ignore
     next_week = schedule_df[mask].copy()  # type: ignore
     

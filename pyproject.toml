@@ -29,8 +29,8 @@ dependencies = [
     # you asked for these:
     "ipynb>=0.5.0", # work with .ipynb files via import
     "pytz>=2024.1",
-    "jax>=0.4.35,<0.5.0",
-    "jaxlib>=0.4.35,<0.5.0",
+    "jax==0.4.28",
+    "jaxlib==0.4.28",
     "jax-metal>=0.1.0",
     "numpyro>=0.15.0",
     "streamlit>=1.28.0",

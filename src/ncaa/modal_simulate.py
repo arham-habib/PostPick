@@ -39,17 +39,10 @@ def _build_image() -> modal.Image:
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("git")
         .run_commands(
-            # Install JAX CPU version first (more stable, avoids CUDA segfaults)
-            # We can still use GPU via JAX's automatic device placement
             "python -m pip install --upgrade pip",
-            # Install JAX CPU version (compatible with repo's version constraint)
-            "python -m pip install 'jax==0.4.28' 'jaxlib==0.4.28'",
-            # Runtime deps used in simulation pipeline
-            "python -m pip install pandas pyarrow numpy",
-            # NumPyro is needed for model imports (even though we're not fitting)
-            "python -m pip install numpyro",
+            "python -m pip install 'jax[cuda12]==0.4.28' -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
+            "python -m pip install pandas pyarrow numpy numpyro",
         )
-        # Set environment variables for JAX
         .env({"XLA_PYTHON_CLIENT_PREALLOCATE": "false"})
         .env({"XLA_PYTHON_CLIENT_ALLOCATOR": "platform"})
         # Add local files LAST with copy=True to bake into image
@@ -92,12 +85,8 @@ def _run_simulation_on_gpu(args: Dict[str, Any]) -> str:
         if PROJECT_MOUNT_PATH not in sys.path:
             sys.path.insert(0, PROJECT_MOUNT_PATH)
         log(f"Python path: {sys.path[:3]}")
-
-        # Use CPU JAX to avoid CUDA segfault issues
-        # CPU JAX will still be much faster than the old nested Python loops
-        os.environ["JAX_PLATFORMS"] = "cpu"
+        
         os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
-        log("Set JAX to use CPU (avoiding CUDA segfault issues)")
         
         # Initialize JAX
         log("Importing JAX...")
@@ -263,26 +252,26 @@ def _upload_data_to_volume(sport: str, model_name: str, monday_date: str, year: 
     
     Uploads:
     - Model pickle file
-    - Schedule CSV file
+    - Game data CSV file (for loading unfinished games)
     
     Skips files that already exist in the volume.
     """
     from pathlib import Path
-    from src.utils.data_utils import get_model_data_path, get_schedule_data_path
+    from src.utils.data_utils import get_model_data_path, get_game_data_path
     
     # Get local file paths
     model_path = get_model_data_path("ncaab", sport, model_name, monday_date)
-    schedule_path = get_schedule_data_path("ncaab", year, sport, "d1")
+    game_path = get_game_data_path("ncaab", year, sport, "d1")
     
     # Check files exist locally
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found locally: {model_path}")
-    if not schedule_path.exists():
-        raise FileNotFoundError(f"Schedule file not found locally: {schedule_path}")
+    if not game_path.exists():
+        raise FileNotFoundError(f"Game data file not found locally: {game_path}")
     
     # Upload to volume (skip if already exists)
     model_volume_path = f"ncaab/models/{model_path.name}"
-    schedule_volume_path = f"ncaab/schedule/{schedule_path.name}"
+    game_volume_path = f"ncaab/game/{game_path.name}"
     
     # Upload model file (skip if already exists)
     try:
@@ -293,14 +282,14 @@ def _upload_data_to_volume(sport: str, model_name: str, monday_date: str, year: 
     except FileExistsError:
         print(f"✓ Model file already exists in volume: {model_path.name}")
     
-    # Upload schedule file (skip if already exists)
+    # Upload game data file (skip if already exists)
     try:
-        print(f"Uploading schedule file to Modal volume: {schedule_path.name}")
+        print(f"Uploading game data file to Modal volume: {game_path.name}")
         with data_volume.batch_upload() as batch:
-            batch.put_file(str(schedule_path), schedule_volume_path)
-        print(f"✓ Schedule file uploaded")
+            batch.put_file(str(game_path), game_volume_path)
+        print(f"✓ Game data file uploaded")
     except FileExistsError:
-        print(f"✓ Schedule file already exists in volume: {schedule_path.name}")
+        print(f"✓ Game data file already exists in volume: {game_path.name}")
     
     print("Data upload check complete!")
 
@@ -335,4 +324,40 @@ def run_modal_simulation(
             }
         )
         print(f"Modal simulation result: {result}")
-
+        
+        # Download the simulation file from volume to local
+        from src.utils.data_utils import get_simulation_data_path
+        from pathlib import Path
+        import subprocess
+        
+        sim_filename = f"{model_name}_{monday_date}.parquet"
+        volume_path = f"ncaab/simulations/{sim_filename}"
+        local_path = get_simulation_data_path("ncaab", sport, model_name, monday_date)
+        
+        print(f"Downloading simulation file from volume to {local_path}...")
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Download from volume using Modal CLI
+        # NOTE: For local development, ensure you are using the full physical paths:
+        # modal volume get postpick-data ncaab/simulations/Vanilla_2026-01-19.parquet /Users/arhamhabib/Projects/PostPick/data/ncaab/simulations/Vanilla_2026-01-19.parquet
+        try:
+            # Always use absolute path for destination to avoid issues
+            # If model_name == "Vanilla" and monday_date == "2026-01-19", we want:
+            # modal volume get postpick-data ncaab/simulations/Vanilla_2026-01-19.parquet /Users/arhamhabib/Projects/PostPick/data/ncaab/simulations/Vanilla_2026-01-19.parquet
+            modal_cmd = [
+                "modal", "volume", "get", "postpick-data",
+                f"ncaab/simulations/{model_name}_{monday_date}.parquet",
+                str(local_path.resolve()),
+            ]
+            subprocess.run(
+                modal_cmd,
+                check=True,
+                capture_output=True,
+            )
+            print(f"✓ Simulation file downloaded to {local_path.resolve()}")
+        except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            print(f"⚠ Could not automatically download file: {e}")
+            print(f"  The file is stored in the Modal volume at: ncaab/simulations/{model_name}_{monday_date}.parquet")
+            print("  Download it manually using:")
+            print(f"  modal volume get postpick-data ncaab/simulations/{model_name}_{monday_date}.parquet {local_path.resolve()}")
+            print("  Or access it via the Modal dashboard")
