@@ -43,16 +43,9 @@ def parse_games(data: Dict[str, Any], date_str: str) -> pd.DataFrame:
         if not g:
             continue
 
-        # Check if scores exist, skip if missing
+        # Get scores (may be None for unfinished/scheduled games)
         home_score = g.get("home", {}).get("score")
         away_score = g.get("away", {}).get("score")
-        if home_score is None or away_score is None:
-            continue
-
-        # Only keep games that are FINAL (exclude games in progress)
-        final_message = g.get("finalMessage", "")
-        if final_message != "FINAL":
-            continue
 
         # Extract division, home_id, away_id
         division = g.get("division", "")
@@ -112,11 +105,12 @@ def scrape_games(sport: str, division: str, year: int):
     for day in tqdm(date_range, desc="Scraping games"):
         date_str = day.strftime("%Y-%m-%d")
         data = fetch_game_data(sport, division, date_str)
-        df = parse_games(data, date_str)
-        
-        if not df.empty:
-            all_data.append(df)
-            logging.info(f"Scraped {len(df)} games for {date_str}")
+        if data is not None:
+            df = parse_games(data, date_str)
+            
+            if not df.empty:
+                all_data.append(df)
+                logging.info(f"Scraped {len(df)} games for {date_str}")
         
         # Be respectful to the API
         time.sleep(1)
@@ -126,9 +120,7 @@ def scrape_games(sport: str, division: str, year: int):
         new_df = pd.concat(all_data, ignore_index=True)
         
         if not existing_df.empty:
-            # Remove old non-FINAL games that might now be FINAL
-            existing_df = existing_df[existing_df["finalMessage"] == "FINAL"]
-            # Combine and deduplicate by gameID
+            # Combine and deduplicate by gameID (keep latest version of each game)
             combined_df = pd.concat([existing_df, new_df], ignore_index=True)
             combined_df = combined_df.drop_duplicates(subset=["gameID"], keep="last")
             combined_df = combined_df.sort_values("date").reset_index(drop=True)
@@ -141,10 +133,9 @@ def scrape_games(sport: str, division: str, year: int):
         logging.info(f"Saved {len(full_df)} games to {output_path}")
     else:
         if not existing_df.empty:
-            # Clean up existing data: remove non-FINAL games
-            existing_df = existing_df[existing_df["finalMessage"] == "FINAL"]
+            # No new games found, but keep existing data (including unfinished games)
             existing_df.to_csv(output_path, index=False)
-            logging.info(f"No new games found. Cleaned existing data: {len(existing_df)} FINAL games")
+            logging.info(f"No new games found. Keeping existing data: {len(existing_df)} games")
         else:
             logging.warning(f"No data scraped for {sport} {division} {year}")
 

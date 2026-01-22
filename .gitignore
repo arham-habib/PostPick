@@ -232,3 +232,5 @@ geckodriver
 # UV lock file (uncomment if you want to ignore it)
 # uv.lock
 pyrightconfig.json
+
+data/
