@@ -4,39 +4,12 @@ This directory contains scrapers for NCAA basketball data using the [henrygd/nca
 
 ## Scrapers Overview
 
-### 1. `schedule_scraper.py` - Future Games (Scheduled Matchups)
-**Purpose**: Capture upcoming games that haven't been played yet (no scores).
+
+### 1. `game_scraper.py` -  Games
+**Purpose**: Capture game results and future games
 
 **What it does**:
 - Fetches games from the scoreboard endpoint
-- Keeps games **WITHOUT** scores (scheduled/future games)
-- Captures matchup information: teams, date, time, venue, network
-
-**When to use**:
-- During the active season to capture upcoming matchups
-- Before games are played to see the schedule ahead
-- To build a future game calendar
-
-**Output**: CSV with scheduled games including:
-- Game ID, teams (home/away), date, start time
-- Venue, network, conference info
-- No scores (games haven't been played)
-
-**Example**:
-```bash
-# Scrape scheduled games for current season
-python src/ncaa/schedule_scraper.py --sport men --division d1 --year 2024
-```
-
----
-
-### 2. `game_scraper.py` - Completed Games (Results)
-**Purpose**: Capture game results after games have been played.
-
-**What it does**:
-- Fetches games from the scoreboard endpoint
-- Keeps games **WITH** scores (completed games)
-- Captures final scores and game results
 
 **When to use**:
 - After games are played to collect results
@@ -85,29 +58,15 @@ python src/ncaa/pbp_scraper.py --sport men --division d1 --year 2023
 ## Typical Workflow
 
 ### During the Season (Real-time)
-1. **Week ahead**: Run `schedule_scraper.py` to see upcoming matchups
 2. **After games**: Run `game_scraper.py` to collect results
 3. **Deep dive**: Run `pbp_scraper.py` for detailed analysis
 
 ### Historical Analysis
 1. Run `game_scraper.py` for past seasons to get completed games
 2. Run `pbp_scraper.py` on those games for detailed data
-3. Note: `schedule_scraper.py` won't find data for past dates (all games completed)
-
-## Batch Scripts
-
-### `scripts/scrape_schedule_data.sh`
-Scrapes scheduled games for multiple years and both men's and women's divisions.
-
-### `scripts/scrape_game_data.sh`
-Scrapes completed game results for multiple years and both men's and women's divisions.
-
-### `scripts/scrape_player_data.sh`
-Scrapes player data (if applicable).
 
 ## Output Directories
 
-- **Schedule data**: `data/ncaa/schedule/`
 - **Game data**: `data/`
 - **Play-by-play data**: `data/`
 - **Logs**: `logs/`
@@ -123,7 +82,7 @@ GET /scoreboard/basketball-{sport}/{division}/{year}/{month}/{day}/all-conf
 
 Where:
 - `sport`: `men` or `women`
-- `division`: `d1`, `d2`, or `d3`
+- `division`: `d1`
 - `date`: `YYYY/MM/DD`
 
 ## Rate Limiting

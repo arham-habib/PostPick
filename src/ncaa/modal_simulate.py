@@ -27,7 +27,6 @@ def _build_image() -> modal.Image:
     - We install CUDA-enabled `jaxlib` via JAX's CUDA wheels index.
     - We copy the source code into the image so it's available at runtime.
     """
-    import os
     from pathlib import Path
     
     # Get absolute path to src directory
@@ -38,14 +37,17 @@ def _build_image() -> modal.Image:
     return (
         modal.Image.debian_slim(python_version="3.12")
         .apt_install("git")
+        # Install JAX with CUDA support
+        # Note: pip_install doesn't support -f flag directly, so we use run_commands for JAX
         .run_commands(
             "python -m pip install --upgrade pip",
             "python -m pip install 'jax[cuda12]==0.4.28' -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html",
-            "python -m pip install pandas pyarrow numpy numpyro",
         )
+        # Use pip_install for standard packages (new API)
+        .pip_install("pandas", "pyarrow", "numpy", "numpyro")
         .env({"XLA_PYTHON_CLIENT_PREALLOCATE": "false"})
         .env({"XLA_PYTHON_CLIENT_ALLOCATOR": "platform"})
-        # Add local files LAST with copy=True to bake into image
+        # Add local files with copy=True to bake into image (still valid in new API)
         .add_local_dir(str(src_path), remote_path=f"{PROJECT_MOUNT_PATH}/src", copy=True)
     )
 
@@ -64,7 +66,7 @@ data_volume = modal.Volume.from_name("postpick-data", create_if_missing=True)
     gpu="A100",
     image=image,
     volumes={f"{PROJECT_MOUNT_PATH}/data": data_volume},
-    timeout=60 * 60,  # 1h
+    timeout=300,  # 5min
 )
 def _run_simulation_on_gpu(args: Dict[str, Any]) -> str:
     """Run simulation on GPU with error handling and logging."""
@@ -252,9 +254,9 @@ def _upload_data_to_volume(sport: str, model_name: str, monday_date: str, year: 
     
     Uploads:
     - Model pickle file
-    - Game data CSV file (for loading unfinished games)
+    - Game data CSV file (for loading unfinished games/schedule)
     
-    Skips files that already exist in the volume.
+    Always overwrites existing files to ensure updates propagate.
     """
     from pathlib import Path
     from src.utils.data_utils import get_model_data_path, get_game_data_path
@@ -269,29 +271,23 @@ def _upload_data_to_volume(sport: str, model_name: str, monday_date: str, year: 
     if not game_path.exists():
         raise FileNotFoundError(f"Game data file not found locally: {game_path}")
     
-    # Upload to volume (skip if already exists)
+    # Define volume paths
     model_volume_path = f"ncaab/models/{model_path.name}"
     game_volume_path = f"ncaab/game/{game_path.name}"
     
-    # Upload model file (skip if already exists)
-    try:
-        print(f"Uploading model file to Modal volume: {model_path.name}")
-        with data_volume.batch_upload() as batch:
-            batch.put_file(str(model_path), model_volume_path)
-        print(f"✓ Model file uploaded")
-    except FileExistsError:
-        print(f"✓ Model file already exists in volume: {model_path.name}")
+    # Upload model file (always overwrite to ensure updates propagate)
+    print(f"Uploading model file to Modal volume: {model_path.name} (will overwrite if exists)")
+    with data_volume.batch_upload() as batch:
+        batch.put_file(str(model_path), model_volume_path)
+    print(f"✓ Model file uploaded")
     
-    # Upload game data file (skip if already exists)
-    try:
-        print(f"Uploading game data file to Modal volume: {game_path.name}")
-        with data_volume.batch_upload() as batch:
-            batch.put_file(str(game_path), game_volume_path)
-        print(f"✓ Game data file uploaded")
-    except FileExistsError:
-        print(f"✓ Game data file already exists in volume: {game_path.name}")
+    # Upload game data file (always overwrite to ensure updates propagate)
+    print(f"Uploading game data file to Modal volume: {game_path.name} (will overwrite if exists)")
+    with data_volume.batch_upload() as batch:
+        batch.put_file(str(game_path), game_volume_path)
+    print(f"✓ Game data file uploaded")
     
-    print("Data upload check complete!")
+    print("Data upload complete! All files updated in Modal volume.")
 
 
 def run_modal_simulation(
