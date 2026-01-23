@@ -4,18 +4,28 @@ Game Simulation Visualizer
 A Streamlit-based web application to visualize predicted game results
 with spread, total, and moneyline metrics.
 """
+import sys
+from pathlib import Path
+
+# Add project root to Python path
+SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+# Set JAX to use CPU to avoid backend issues
+import os
+os.environ['JAX_PLATFORMS'] = 'cpu'
+
 import streamlit as st
 import pandas as pd
-import numpy as np
-from pathlib import Path
-from datetime import datetime
-import re
-from typing import List, Tuple, Optional, Dict
 
-# Get project root
-SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
-DATA_DIR = SCRIPT_DIR / "data"
-SIMULATIONS_DIR = DATA_DIR / "ncaab" / "simulations"
+from src.gui.data_loader import (
+    get_available_combinations,
+    load_aggregated_simulation_data,
+    DEFAULT_GENDER
+)
+from src.gui.game_summary import format_display_df
+from src.gui.game_details import render_game_detail_view
 
 # Page configuration
 st.set_page_config(
@@ -23,204 +33,6 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
-
-
-def aggregate_simulation_data(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Aggregate raw simulation data to compute statistics per game.
-    
-    Args:
-        df: DataFrame with columns: game_id, date, home_team, away_team, 
-            param_draw_idx, sim_idx, home_score, away_score, spread, total
-    
-    Returns:
-        DataFrame with aggregated statistics per game
-    """
-    if df.empty:
-        return df
-    
-    # Group by game - use game_id as primary key, include other fields for reference
-    # If game_id is not unique, fall back to grouping by all identifying fields
-    group_cols = ['game_id', 'home_team', 'away_team']
-    if 'date' in df.columns:
-        group_cols.append('date')
-    
-    grouped = df.groupby(group_cols)
-    
-    results = []
-    for group_key, group in grouped:
-        # Unpack group key based on number of columns
-        if len(group_cols) == 4:
-            game_id, home_team, away_team, date = group_key
-        else:
-            game_id, home_team, away_team = group_key
-            date = group['date'].iloc[0] if 'date' in group.columns else None
-        
-        spreads = group['spread'].values
-        totals = group['total'].values
-        home_scores = group['home_score'].values
-        away_scores = group['away_score'].values
-        
-        # Compute spread percentiles
-        spread_p5 = float(np.percentile(spreads, 5))
-        spread_p50 = float(np.percentile(spreads, 50))
-        spread_p95 = float(np.percentile(spreads, 95))
-        
-        # Compute total percentiles
-        total_p5 = float(np.percentile(totals, 5))
-        total_p50 = float(np.percentile(totals, 50))
-        total_p95 = float(np.percentile(totals, 95))
-        
-        # Compute moneyline probabilities
-        home_wins = (home_scores > away_scores).sum()
-        away_wins = (away_scores > home_scores).sum()
-        total_sims = len(group)
-        
-        moneyline_home_win = float(home_wins / total_sims) if total_sims > 0 else 0.0
-        moneyline_away_win = float(away_wins / total_sims) if total_sims > 0 else 0.0
-        
-        result = {
-            'game_id': game_id,
-            'home_team': home_team,
-            'away_team': away_team,
-            'spread_p5': spread_p5,
-            'spread_p50': spread_p50,
-            'spread_p95': spread_p95,
-            'total_p5': total_p5,
-            'total_p50': total_p50,
-            'total_p95': total_p95,
-            'moneyline_home_win': moneyline_home_win,
-            'moneyline_away_win': moneyline_away_win,
-        }
-        
-        if date is not None:
-            result['date'] = date
-        
-        results.append(result)
-    
-    return pd.DataFrame(results)
-
-
-def get_available_combinations() -> List[Dict[str, str]]:
-    """
-    Scan simulations directory for available simulation files.
-    
-    Returns:
-        List of dicts with 'model_name', 'monday_date', 'file_path' keys
-    """
-    combinations = []
-    pattern = re.compile(r"([A-Za-z]+)_(\d{4}-\d{2}-\d{2})\.parquet")
-    
-    if not SIMULATIONS_DIR.exists():
-        return combinations
-    
-    for file_path in SIMULATIONS_DIR.glob("*.parquet"):
-        match = pattern.match(file_path.name)
-        if match:
-            model_name, monday_date = match.groups()
-            combinations.append({
-                "model_name": model_name,
-                "monday_date": monday_date,
-                "file_path": file_path
-            })
-    
-    return sorted(combinations, key=lambda x: (x["monday_date"], x["model_name"]), reverse=True)
-
-
-def load_simulation_data(model_name: str, monday_date: str) -> Optional[pd.DataFrame]:
-    """
-    Load and aggregate simulation data from parquet file.
-    
-    Args:
-        model_name: Name of the model (e.g., "Vanilla", "TeamVol")
-        monday_date: Monday date string (e.g., "2026-01-15")
-    
-    Returns:
-        DataFrame with aggregated simulation results or None if file not found
-    """
-    file_path = SIMULATIONS_DIR / f"{model_name}_{monday_date}.parquet"
-    
-    if not file_path.exists():
-        return None
-    
-    try:
-        # Load raw simulation data
-        df = pd.read_parquet(file_path)
-        
-        # Convert date column to datetime
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"])
-        
-        # Aggregate simulation data
-        aggregated_df = aggregate_simulation_data(df)
-        
-        # Convert date back to datetime if needed
-        if "date" in aggregated_df.columns:
-            aggregated_df["date"] = pd.to_datetime(aggregated_df["date"])
-        
-        return aggregated_df
-    except Exception as e:
-        st.error(f"Error loading data: {e}")
-        return None
-
-
-def format_display_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Format dataframe for display with key columns."""
-    if df.empty:
-        return df
-    
-    display_df = df.copy()
-    
-    # Format date
-    if "date" in display_df.columns:
-        display_df["date"] = pd.to_datetime(display_df["date"]).dt.strftime("%Y-%m-%d")
-    
-    # Format spread
-    if "spread_p50" in display_df.columns:
-        spread_sign = display_df["spread_p50"].apply(lambda x: "+" if x >= 0 else "")
-        display_df["spread"] = spread_sign + display_df["spread_p50"].round(1).astype(str)
-        if "spread_p5" in display_df.columns and "spread_p95" in display_df.columns:
-            display_df["spread_range"] = (
-                display_df["spread_p5"].round(0).astype(int).astype(str) + " to " +
-                display_df["spread_p95"].round(0).astype(int).astype(str)
-            )
-    
-    # Format total
-    if "total_p50" in display_df.columns:
-        display_df["total"] = display_df["total_p50"].round(1).astype(str)
-        if "total_p5" in display_df.columns and "total_p95" in display_df.columns:
-            display_df["total_range"] = (
-                display_df["total_p5"].round(0).astype(int).astype(str) + " to " +
-                display_df["total_p95"].round(0).astype(int).astype(str)
-            )
-    
-    # Format moneyline percentages
-    if "moneyline_home_win" in display_df.columns:
-        display_df["home_win_pct"] = (display_df["moneyline_home_win"] * 100).round(1).astype(str) + "%"
-    if "moneyline_away_win" in display_df.columns:
-        display_df["away_win_pct"] = (display_df["moneyline_away_win"] * 100).round(1).astype(str) + "%"
-    
-    # Select display columns
-    display_cols = []
-    col_order = ["date", "away_team", "home_team", "spread", "spread_range", 
-                 "total", "total_range", "home_win_pct", "away_win_pct"]
-    
-    for col in col_order:
-        if col in display_df.columns:
-            display_cols.append(col)
-    
-    # Add any remaining columns not in the ordered list
-    for col in display_df.columns:
-        if col not in display_cols and col not in ["spread_p50", "spread_p5", "spread_p95",
-                                                     "total_p50", "total_p5", "total_p95",
-                                                     "moneyline_home_win", "moneyline_away_win"]:
-            display_cols.append(col)
-    
-    # Ensure we return a DataFrame (not a Series if only one column)
-    result = display_df[display_cols]
-    if isinstance(result, pd.Series):
-        return result.to_frame()
-    return result  # type: ignore
 
 
 def main():
@@ -233,7 +45,7 @@ def main():
     
     if not combinations:
         st.error("No simulation files found in the simulations directory.")
-        st.info(f"Expected location: {SIMULATIONS_DIR}")
+        st.info(f"Expected location: {SCRIPT_DIR / 'data' / 'ncaab' / 'simulations'}")
         return
     
     # Sidebar filters
@@ -260,8 +72,9 @@ def main():
         
         st.markdown("---")
         
-        # Load data
-        df = load_simulation_data(selected_model, selected_monday_date)
+        # Load aggregated data (summary only, not raw simulations)
+        with st.spinner("Loading game summaries..."):
+            df = load_aggregated_simulation_data(selected_model, selected_monday_date)
         
         if df is None or df.empty:
             st.error(f"No data found for {selected_model} {selected_monday_date}")
@@ -357,11 +170,74 @@ def main():
     year_str = f" {selected_year}" if selected_year else ""
     st.header(f"{selected_model} Model - {selected_monday_date}{year_str}")
     
-    # Format and display data as table
+    # Format and display data with expandable rows
     if isinstance(df, pd.DataFrame) and not df.empty:
         display_df = format_display_df(df)
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-        st.caption(f"Showing {len(df)} games")
+        
+        # Show summary table
+        st.dataframe(display_df, width='stretch', hide_index=True)
+        st.caption(f"Showing {len(df)} games. Click on a game below to see detailed analysis.")
+        
+        # Display games with expandable detail views
+        st.markdown("---")
+        st.subheader("Game Details")
+        st.info("💡 Expand a game below to load its detailed simulation data and visualizations. Data is loaded on-demand to save memory.")
+        
+        # Add pagination to limit number of games shown
+        games_per_page = st.sidebar.number_input("Games per page", min_value=10, max_value=100, value=20, step=10)
+        
+        total_games = len(df)
+        num_pages = (total_games + games_per_page - 1) // games_per_page
+        
+        if num_pages > 1:
+            page = st.sidebar.number_input("Page", min_value=1, max_value=num_pages, value=1, step=1)
+            start_idx = (page - 1) * games_per_page
+            end_idx = start_idx + games_per_page
+            df_page = df.iloc[start_idx:end_idx]
+            st.caption(f"Showing games {start_idx + 1}-{min(end_idx, total_games)} of {total_games}")
+        else:
+            df_page = df
+            page = 1
+        
+        # Use expanders with buttons inside - only load when button is clicked
+        # This prevents loading data when expanders are just created
+        for idx, row in df_page.iterrows():
+            game_id = row['game_id']
+            home_team = row['home_team']
+            away_team = row['away_team']
+            
+            # Create label for each game
+            game_label = f"{away_team} @ {home_team}"
+            if "date" in row and pd.notna(row["date"]):
+                date_str = pd.to_datetime(row["date"]).strftime("%Y-%m-%d")
+                game_label = f"{date_str}: {game_label}"
+            
+            # Add summary stats to label
+            if "spread_p50" in row and "moneyline_home_win" in row:
+                spread_str = f"{row['spread_p50']:+.1f}"
+                home_win_pct = f"{row['moneyline_home_win']*100:.1f}%"
+                game_label = f"{game_label} | Spread: {spread_str} | Home Win: {home_win_pct}"
+            
+            # Create unique key for this game's loaded state
+            load_key = f"load_{game_id}_{selected_model}_{selected_monday_date}"
+            
+            # Use expander but only load content when button is clicked
+            with st.expander(game_label, expanded=False):
+                if not st.session_state.get(load_key, False):
+                    st.info("Click the button below to load detailed game analysis")
+                    if st.button("Load Game Details", key=f"btn_{load_key}"):
+                        st.session_state[load_key] = True
+                        st.rerun()
+                else:
+                    # Only render details if button was clicked
+                    render_game_detail_view(
+                        game_id=game_id,
+                        home_team=home_team,
+                        away_team=away_team,
+                        model_name=selected_model,
+                        monday_date=selected_monday_date,
+                        gender=DEFAULT_GENDER
+                    )
 
 
 if __name__ == "__main__":
