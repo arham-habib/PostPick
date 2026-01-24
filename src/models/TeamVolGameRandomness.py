@@ -104,8 +104,9 @@ def _simulate_kernel(
     n_sims: int
 ):
     Db = alpha_b.shape[0]
-    n_games = home_idx.shape[0]
+    G = home_idx.shape[0]
 
+    # Extract team parameters for games: [Db, G]
     home_off = jnp.take(offense_b, home_idx, axis=1)
     away_off = jnp.take(offense_b, away_idx, axis=1)
     home_def = jnp.take(defense_b, home_idx, axis=1)
@@ -116,45 +117,38 @@ def _simulate_kernel(
     home_def_std = jnp.take(team_def_std_b, home_idx, axis=1)
     away_def_std = jnp.take(team_def_std_b, away_idx, axis=1)
 
-    # Base eta without gamma and epsilon: [Db, G]
-    eta_home_base = alpha_b[:, None] + home_off - away_def + home_h
-    eta_away_base = alpha_b[:, None] + away_off - home_def
+    # Base eta without gamma and epsilon: [Db, G] -> [Db, 1, G] for broadcasting
+    eta_home_base = (alpha_b[:, None] + home_off - away_def + home_h)[:, None, :]  # [Db, 1, G]
+    eta_away_base = (alpha_b[:, None] + away_off - home_def)[:, None, :]  # [Db, 1, G]
 
-    # Epsilon stds: [Db, G]
-    eps_home_std = home_off_std + away_def_std
-    eps_away_std = away_off_std + home_def_std
+    # Epsilon stds: [Db, G] -> [Db, 1, G] for broadcasting
+    eps_home_std = (home_off_std + away_def_std)[:, None, :]  # [Db, 1, G]
+    eps_away_std = (away_off_std + home_def_std)[:, None, :]  # [Db, 1, G]
 
-    # Split keys: need 3 keys per simulation (gamma, eps_home, eps_away) + 2 for poisson = 5 total per sim
-    # Actually, we can reuse keys: gamma, eps_home, eps_away, then poisson for home and away
-    # So [n_sims, 3, 2] where [:, 0, :] is for gamma, [:, 1, :] for eps, [:, 2, :] for poisson
-    keys = random.split(key, Db * n_sims * 3).reshape(Db, n_sims, 3, 2)
+    # Sigma_game: [Db] -> [Db, 1, 1] for broadcasting
+    sigma_game_expanded = sigma_game_b[:, None, None]  # [Db, 1, 1]
 
-    def _sim_one_draw(keys_draw: jnp.ndarray, eta_h_base: jnp.ndarray, eta_a_base: jnp.ndarray, 
-                     eps_h_std: jnp.ndarray, eps_a_std: jnp.ndarray, sg: jnp.ndarray):
-        # keys_draw shape: [n_sims, 3, 2]
-        # keys_draw[:, 0, :] for epsilon, keys_draw[:, 1, :] for poisson, keys_draw[:, 2, :] for gamma
-        # Sample gamma per simulation: [S, G]
-        gamma = jax.vmap(lambda k: random.normal(k, shape=(n_games,)) * sg, in_axes=0)(keys_draw[:, 2, 0])
-        
-        # Sample epsilon for each simulation: [S, G]
-        eps_home = jax.vmap(lambda k, std: random.normal(k, shape=(n_games,)) * std, in_axes=(0, None))(
-            keys_draw[:, 0, 0], eps_h_std
-        )
-        eps_away = jax.vmap(lambda k, std: random.normal(k, shape=(n_games,)) * std, in_axes=(0, None))(
-            keys_draw[:, 0, 1], eps_a_std
-        )
-        
-        eta_home = eta_h_base[None, :] + gamma + eps_home  # [S, G]
-        eta_away = eta_a_base[None, :] + gamma + eps_away  # [S, G]
-        lam_home = jnp.exp(eta_home)
-        lam_away = jnp.exp(eta_away)
-        
-        home_scores = jax.vmap(random.poisson, in_axes=(0, None))(keys_draw[:, 1, 0], lam_home)
-        away_scores = jax.vmap(random.poisson, in_axes=(0, None))(keys_draw[:, 1, 1], lam_away)
-        return home_scores, away_scores
+    # Split only 4 times: one for gamma, one for eps_home, one for eps_away, one for poisson
+    k1, k2, k3, k4 = random.split(key, 4)
 
-    home_s, away_s = jax.vmap(_sim_one_draw, in_axes=(0, 0, 0, 0, 0, 0))(keys, eta_home_base, eta_away_base, eps_home_std, eps_away_std, sigma_game_b)
-    return home_s.astype(jnp.int32), away_s.astype(jnp.int32)
+    # Sample ALL noise at once in a single massive block [Db, n_sims, G]
+    # Gamma (shared game effect): [Db, n_sims, G]
+    gamma = random.normal(k1, shape=(Db, n_sims, G)) * sigma_game_expanded
+    
+    # Epsilon noise: [Db, n_sims, G]
+    eps_home = random.normal(k2, shape=(Db, n_sims, G)) * eps_home_std
+    eps_away = random.normal(k3, shape=(Db, n_sims, G)) * eps_away_std
+
+    # Compute lambda: [Db, n_sims, G]
+    lam_home = jnp.exp(eta_home_base + gamma + eps_home)
+    lam_away = jnp.exp(eta_away_base + gamma + eps_away)
+
+    # Sample Poisson likelihoods
+    home_scores = random.poisson(k4, lam_home)
+    # Use fold_in to ensure home and away aren't using identical Poisson seeds
+    away_scores = random.poisson(random.fold_in(k4, 1), lam_away)
+
+    return home_scores.astype(jnp.int32), away_scores.astype(jnp.int32)
 
 def simulate_scores_block(
     home_indices: jnp.ndarray,
