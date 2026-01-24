@@ -8,10 +8,6 @@ from src.utils.enums import EncodedSeason
 from functools import partial
 
 
-"""
-Team volatility model with team-specific offensive and defensive std devs
-Each team's points arrival rate is a function of their team-specific volatility
-"""
 def hierarchal_model(
     home_idx: jnp.ndarray,
     away_idx: jnp.ndarray,
@@ -19,57 +15,50 @@ def hierarchal_model(
     y_away: jnp.ndarray,
     n_teams: int
 ):
-    # Intercept: weakly-informative
-    alpha = numpyro.sample("alpha", dist.Normal(0.0, 5.0))
+    n_games = home_idx.shape[0]
+    alpha = numpyro.sample("alpha", dist.Normal(4.0, 1.0)) # Centered for log-points
 
-    # Global hierarchy scales for team effects (positive)
+    # Hierarchy scales
     sigma_off = numpyro.sample("sigma_off", dist.HalfNormal(.15))
     sigma_def = numpyro.sample("sigma_def", dist.HalfNormal(.15))
     tau_h     = numpyro.sample("tau_h",     dist.HalfNormal(.03))
+    
+    # Shared Game-Level Scale (The pace/rhythm factor)
+    sigma_game = numpyro.sample("sigma_game", dist.HalfNormal(0.05))
 
-    # Global priors for team-specific volatility std devs
+    # Volatility scales
     sigma_off_team_std = numpyro.sample("sigma_off_team_std", dist.HalfNormal(0.05))
     sigma_def_team_std = numpyro.sample("sigma_def_team_std", dist.HalfNormal(0.05))
 
-    # League-level home advantage mean
     h_mu = numpyro.sample("h_mu", dist.Normal(0.0, .05))
 
-    # Team-level effects
     with numpyro.plate("team", n_teams):
-        h       = numpyro.sample("h",       dist.Normal(h_mu, tau_h))
-        offense_uncentered: jnp.ndarray = numpyro.sample("offense", dist.Normal(0.0, sigma_off)) # type: ignore
-        defense_uncentered: jnp.ndarray = numpyro.sample("defense", dist.Normal(0.0, sigma_def)) # type: ignore
-        
-        # Team-specific offensive and defensive volatility std devs
-        team_off_std: jnp.ndarray = numpyro.sample("team_off_std", dist.HalfNormal(sigma_off_team_std)) # type: ignore
-        team_def_std: jnp.ndarray = numpyro.sample("team_def_std", dist.HalfNormal(sigma_def_team_std)) # type: ignore
+        h = numpyro.sample("h", dist.Normal(h_mu, tau_h))
+        off_un = numpyro.sample("offense", dist.Normal(0.0, sigma_off))
+        def_un = numpyro.sample("defense", dist.Normal(0.0, sigma_def))
+        t_off_std = numpyro.sample("team_off_std", dist.HalfNormal(sigma_off_team_std))
+        t_def_std = numpyro.sample("team_def_std", dist.HalfNormal(sigma_def_team_std))
 
-    offense = offense_uncentered - offense_uncentered.mean()
-    defense = defense_uncentered - defense_uncentered.mean()
+    offense = off_un - off_un.mean() # type: ignore
+    defense = def_un - def_un.mean() # type: ignore
 
-    # Game-level random effects incorporating team volatility
-    # Home team's offensive volatility and away team's defensive volatility affect home scoring
-    epsilon_home: jnp.ndarray = numpyro.sample( # type: ignore
-        "epsilon_home", 
-        dist.Normal(0.0, team_off_std[home_idx] + team_def_std[away_idx])
-    )
-    # Away team's offensive volatility and home team's defensive volatility affect away scoring
-    epsilon_away: jnp.ndarray = numpyro.sample( # type: ignore
-        "epsilon_away", 
-        dist.Normal(0.0, team_off_std[away_idx] + team_def_std[home_idx])
-    )
+    # The Shared Game Effect: One draw per game, applied to both teams
+    with numpyro.plate("games", n_games):
+        gamma = numpyro.sample("gamma", dist.Normal(0.0, sigma_game))
 
-    # Linear predictors with team volatility effects
-    eta_home = alpha + offense[home_idx] - defense[away_idx] + h[home_idx] + epsilon_home      # type: ignore
-    eta_away = alpha + offense[away_idx] - defense[home_idx] + epsilon_away                    # type: ignore
+    # Independent Volatility (Epsilon)
+    eps_h = numpyro.sample("eps_h", dist.Normal(0.0, t_off_std[home_idx] + t_def_std[away_idx])) # type: ignore
+    eps_a = numpyro.sample("eps_a", dist.Normal(0.0, t_off_std[away_idx] + t_def_std[home_idx])) # type: ignore
 
-    # Likelihood
+    eta_home = alpha + offense[home_idx] - defense[away_idx] + h[home_idx] + gamma + eps_h # type: ignore
+    eta_away = alpha + offense[away_idx] - defense[home_idx] + gamma + eps_a # type: ignore
+
     numpyro.sample("y_home", dist.Poisson(jnp.exp(eta_home)), obs=y_home)
     numpyro.sample("y_away", dist.Poisson(jnp.exp(eta_away)), obs=y_away)
 
 def fit_hierarchal_model(encoded: EncodedSeason, seed: int = 0, num_chains: int = 2, num_warmup: int = 100, num_samples: int = 300):
     """
-    Fit the TeamVol model on an EncodedSeason.
+    Fit the TeamVolGameRandomness model on an EncodedSeason.
     Returns the MCMC object and posterior samples.
     """
     home_idx = jnp.array(encoded.home_idx)
@@ -100,7 +89,7 @@ def fit_hierarchal_model(encoded: EncodedSeason, seed: int = 0, num_chains: int 
     return mcmc, samples
 
 
-@partial(jax.jit, static_argnums=(9,))
+@partial(jax.jit, static_argnums=(10,))
 def _simulate_kernel(
     alpha_b: jnp.ndarray,
     offense_b: jnp.ndarray,
@@ -108,12 +97,14 @@ def _simulate_kernel(
     h_b: jnp.ndarray,
     team_off_std_b: jnp.ndarray,
     team_def_std_b: jnp.ndarray,
+    sigma_game_b: jnp.ndarray,
     home_idx: jnp.ndarray,
     away_idx: jnp.ndarray,
     key: jnp.ndarray,
     n_sims: int
 ):
     Db = alpha_b.shape[0]
+    n_games = home_idx.shape[0]
 
     home_off = jnp.take(offense_b, home_idx, axis=1)
     away_off = jnp.take(offense_b, away_idx, axis=1)
@@ -125,7 +116,7 @@ def _simulate_kernel(
     home_def_std = jnp.take(team_def_std_b, home_idx, axis=1)
     away_def_std = jnp.take(team_def_std_b, away_idx, axis=1)
 
-    # Base eta without epsilon: [Db, G]
+    # Base eta without gamma and epsilon: [Db, G]
     eta_home_base = alpha_b[:, None] + home_off - away_def + home_h
     eta_away_base = alpha_b[:, None] + away_off - home_def
 
@@ -133,22 +124,28 @@ def _simulate_kernel(
     eps_home_std = home_off_std + away_def_std
     eps_away_std = away_off_std + home_def_std
 
-    keys = random.split(key, Db * n_sims * 2).reshape(Db, n_sims, 2, 2)
+    # Split keys: need 3 keys per simulation (gamma, eps_home, eps_away) + 2 for poisson = 5 total per sim
+    # Actually, we can reuse keys: gamma, eps_home, eps_away, then poisson for home and away
+    # So [n_sims, 3, 2] where [:, 0, :] is for gamma, [:, 1, :] for eps, [:, 2, :] for poisson
+    keys = random.split(key, Db * n_sims * 3).reshape(Db, n_sims, 3, 2)
 
     def _sim_one_draw(keys_draw: jnp.ndarray, eta_h_base: jnp.ndarray, eta_a_base: jnp.ndarray, 
-                     eps_h_std: jnp.ndarray, eps_a_std: jnp.ndarray):
-        # keys_draw shape: [n_sims, 2, 2]
-        # keys_draw[:, 0, :] for epsilon, keys_draw[:, 1, :] for poisson
+                     eps_h_std: jnp.ndarray, eps_a_std: jnp.ndarray, sg: jnp.ndarray):
+        # keys_draw shape: [n_sims, 3, 2]
+        # keys_draw[:, 0, :] for epsilon, keys_draw[:, 1, :] for poisson, keys_draw[:, 2, :] for gamma
+        # Sample gamma per simulation: [S, G]
+        gamma = jax.vmap(lambda k: random.normal(k, shape=(n_games,)) * sg, in_axes=0)(keys_draw[:, 2, 0])
+        
         # Sample epsilon for each simulation: [S, G]
-        eps_home = jax.vmap(lambda k, std: random.normal(k, shape=(eta_h_base.shape[0],)) * std, in_axes=(0, None))(
+        eps_home = jax.vmap(lambda k, std: random.normal(k, shape=(n_games,)) * std, in_axes=(0, None))(
             keys_draw[:, 0, 0], eps_h_std
         )
-        eps_away = jax.vmap(lambda k, std: random.normal(k, shape=(eta_a_base.shape[0],)) * std, in_axes=(0, None))(
+        eps_away = jax.vmap(lambda k, std: random.normal(k, shape=(n_games,)) * std, in_axes=(0, None))(
             keys_draw[:, 0, 1], eps_a_std
         )
         
-        eta_home = eta_h_base[None, :] + eps_home  # [S, G]
-        eta_away = eta_a_base[None, :] + eps_away  # [S, G]
+        eta_home = eta_h_base[None, :] + gamma + eps_home  # [S, G]
+        eta_away = eta_a_base[None, :] + gamma + eps_away  # [S, G]
         lam_home = jnp.exp(eta_home)
         lam_away = jnp.exp(eta_away)
         
@@ -156,7 +153,7 @@ def _simulate_kernel(
         away_scores = jax.vmap(random.poisson, in_axes=(0, None))(keys_draw[:, 1, 1], lam_away)
         return home_scores, away_scores
 
-    home_s, away_s = jax.vmap(_sim_one_draw, in_axes=(0, 0, 0, 0, 0))(keys, eta_home_base, eta_away_base, eps_home_std, eps_away_std)
+    home_s, away_s = jax.vmap(_sim_one_draw, in_axes=(0, 0, 0, 0, 0, 0))(keys, eta_home_base, eta_away_base, eps_home_std, eps_away_std, sigma_game_b)
     return home_s.astype(jnp.int32), away_s.astype(jnp.int32)
 
 def simulate_scores_block(
@@ -169,7 +166,7 @@ def simulate_scores_block(
     n_sims: int,
     rng_key: jnp.ndarray,
 ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-    """Simulate an exploded block of scores for the TeamVol model.
+    """Simulate an exploded block of scores for the TeamVolGameRandomness model.
 
     This is the GPU-friendly path used by the simulation pipeline:
     - Vectorized over posterior draws, simulations, and games
@@ -178,8 +175,8 @@ def simulate_scores_block(
     Args:
         home_indices: [G] home team indices
         away_indices: [G] away team indices
-        samples: posterior samples (expects keys: 'alpha', 'offense', 'defense', 'h', 'team_off_std', 'team_def_std')
-                 Shapes: alpha [D], offense/defense/h/team_off_std/team_def_std [D, T]
+        samples: posterior samples (expects keys: 'alpha', 'offense', 'defense', 'h', 'team_off_std', 'team_def_std', 'sigma_game')
+                 Shapes: alpha [D], offense/defense/h/team_off_std/team_def_std [D, T], sigma_game [D]
         draw_start: starting posterior draw index (inclusive)
         draw_end: ending posterior draw index (exclusive)
         n_sims: simulations per posterior draw per game
@@ -199,6 +196,7 @@ def simulate_scores_block(
     h = samples["h"][draw_start:draw_end]  # [Db, T]
     team_off_std = samples["team_off_std"][draw_start:draw_end]  # [Db, T]
     team_def_std = samples["team_def_std"][draw_start:draw_end]  # [Db, T]
+    sigma_game = samples["sigma_game"][draw_start:draw_end]  # [Db]
     block_key = random.fold_in(rng_key, draw_start)
 
-    return _simulate_kernel(alpha, offense, defense, h, team_off_std, team_def_std, home_indices, away_indices, block_key, n_sims)
+    return _simulate_kernel(alpha, offense, defense, h, team_off_std, team_def_std, sigma_game, home_indices, away_indices, block_key, n_sims)
