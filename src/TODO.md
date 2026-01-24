@@ -10,10 +10,12 @@
 - [x] Table stakes model -- harden this training pipeline
     - Offensive, defensive, and home effect
 - [x] Add team-level dispersion
+- [ ] Switch to non-exponential space
 - [x] Clean up logging
 
 ### GUI
-- [ ] display the parameters for a team
-- [ ] display the outcomes of the game as simulated in the parquet file
+- [x] display the parameters for a team
+- [x] display the outcomes of the game as simulated in the parquet file
+- [ ] get rid of ties
 
 

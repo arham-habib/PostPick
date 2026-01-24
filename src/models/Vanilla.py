@@ -21,12 +21,12 @@ def hierarchal_model(
     alpha = numpyro.sample("alpha", dist.Normal(0.0, 5.0))
 
     # Hierarchy scales (positive)
-    sigma_off = numpyro.sample("sigma_off", dist.HalfNormal(1.0))
-    sigma_def = numpyro.sample("sigma_def", dist.HalfNormal(1.0))
-    tau_h     = numpyro.sample("tau_h",     dist.HalfNormal(1.0))
+    sigma_off = numpyro.sample("sigma_off", dist.HalfNormal(.15))
+    sigma_def = numpyro.sample("sigma_def", dist.HalfNormal(.15))
+    tau_h     = numpyro.sample("tau_h",     dist.HalfNormal(.05))
 
     # League-level home advantage mean
-    h_mu = numpyro.sample("h_mu", dist.Normal(0.0, 1.0))
+    h_mu = numpyro.sample("h_mu", dist.Normal(0.0, .05))
 
     # team-level effects
     with numpyro.plate("team", n_teams):
@@ -153,88 +153,3 @@ def simulate_scores_block(
     block_key = random.fold_in(rng_key, draw_start)
 
     return _simulate_kernel(alpha, offense, defense, h, home_indices, away_indices, block_key, n_sims)
-
-# def simulate_scores_block(
-#     home_indices: jnp.ndarray,
-#     away_indices: jnp.ndarray,
-#     samples: Dict[str, jnp.ndarray],
-#     *,
-#     draw_start: int,
-#     draw_end: int,
-#     n_sims: int,
-#     rng_key: jnp.ndarray,
-# ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-#     """Simulate an exploded block of scores for the Vanilla model.
-
-#     This is the GPU-friendly path used by the simulation pipeline:
-#     - Vectorized over posterior draws, simulations, and games
-#     - Returns integer score tensors shaped [Db, S, G]
-
-#     Args:
-#         home_indices: [G] home team indices
-#         away_indices: [G] away team indices
-#         samples: posterior samples (expects keys: 'alpha', 'offense', 'defense', 'h')
-#                  Shapes: alpha [D], offense/defense/h [D, T]
-#         draw_start: starting posterior draw index (inclusive)
-#         draw_end: ending posterior draw index (exclusive)
-#         n_sims: simulations per posterior draw per game
-#         rng_key: base RNG key; block is deterministically derived from this + draw_start
-
-#     Returns:
-#         (home_scores, away_scores): both shaped [Db, S, G], dtype int32
-#     """
-#     # Defensive checks (cheap; keeps weird silent shape bugs from propagating)
-#     if draw_end <= draw_start:
-#         raise ValueError(f"draw_end must be > draw_start (got {draw_start=}, {draw_end=})")
-#     if n_sims <= 0:
-#         raise ValueError(f"n_sims must be > 0 (got {n_sims})")
-
-#     # Slice samples for this block on host side (keeps JIT signature simpler)
-#     alpha = samples["alpha"][draw_start:draw_end]  # [Db]
-#     offense = samples["offense"][draw_start:draw_end]  # [Db, T]
-#     defense = samples["defense"][draw_start:draw_end]  # [Db, T]
-#     h = samples["h"][draw_start:draw_end]  # [Db, T]
-
-#     # Make the block RNG deterministic and independent across blocks
-#     block_key = random.fold_in(rng_key, draw_start)
-
-#     @jax.jit
-#     def _simulate(
-#         alpha_b: jnp.ndarray,
-#         offense_b: jnp.ndarray,
-#         defense_b: jnp.ndarray,
-#         h_b: jnp.ndarray,
-#         home_idx: jnp.ndarray,
-#         away_idx: jnp.ndarray,
-#         key: jnp.ndarray,
-#     ) -> Tuple[jnp.ndarray, jnp.ndarray]:
-#         Db = alpha_b.shape[0]
-#         G = home_idx.shape[0]
-
-#         # Gather team parameters: result shapes [Db, G]
-#         home_off = jnp.take(offense_b, home_idx, axis=1)
-#         away_off = jnp.take(offense_b, away_idx, axis=1)
-#         home_def = jnp.take(defense_b, home_idx, axis=1)
-#         away_def = jnp.take(defense_b, away_idx, axis=1)
-#         home_h = jnp.take(h_b, home_idx, axis=1)
-
-#         # Compute rates: [Db, G]
-#         eta_home = alpha_b[:, None] + home_off - away_def + home_h
-#         eta_away = alpha_b[:, None] + away_off - home_def
-#         lam_home = jnp.exp(eta_home)
-#         lam_away = jnp.exp(eta_away)
-
-#         # Generate keys: [Db, S, 2, 2] => (home_key, away_key)
-#         keys = random.split(key, Db * n_sims * 2).reshape(Db, n_sims, 2, 2)
-
-#         def _sim_one_draw(keys_draw: jnp.ndarray, lam_h: jnp.ndarray, lam_a: jnp.ndarray):
-#             # keys_draw: [S, 2, 2], lam_*: [G]
-#             home_scores = jax.vmap(random.poisson, in_axes=(0, None))(keys_draw[:, 0], lam_h)
-#             away_scores = jax.vmap(random.poisson, in_axes=(0, None))(keys_draw[:, 1], lam_a)
-#             return home_scores, away_scores  # [S, G], [S, G]
-
-#         home_s, away_s = jax.vmap(_sim_one_draw, in_axes=(0, 0, 0))(keys, lam_home, lam_away)
-#         # home_s/away_s: [Db, S, G]
-#         return home_s.astype(jnp.int32), away_s.astype(jnp.int32)
-
-#     return _simulate(alpha, offense, defense, h, home_indices, away_indices, block_key)
