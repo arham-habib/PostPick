@@ -37,4 +37,5 @@ dependencies = [
     "pyarrow>=14.0.0",
     "modal>=1.3.0.post1",
     "plotly>=5.18.0",
+    "polars>=1.37.1",
 ]
