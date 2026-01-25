@@ -16,37 +16,46 @@ def hierarchal_model(
     n_teams: int
 ):
     n_games = home_idx.shape[0]
-    alpha = numpyro.sample("alpha", dist.Normal(4.0, 1.0)) # Centered for log-points
+    alpha = numpyro.sample("alpha", dist.Normal(4.0, 1.0))
 
-    # Hierarchy scales
+    # 1. Global Hierarchy Scales
     sigma_off = numpyro.sample("sigma_off", dist.HalfNormal(.15))
     sigma_def = numpyro.sample("sigma_def", dist.HalfNormal(.15))
     tau_h     = numpyro.sample("tau_h",     dist.HalfNormal(.03))
-    
-    # Shared Game-Level Scale (The pace/rhythm factor)
     sigma_game = numpyro.sample("sigma_game", dist.HalfNormal(0.05))
-
-    # Volatility scales
-    sigma_off_team_std = numpyro.sample("sigma_off_team_std", dist.HalfNormal(0.05))
-    sigma_def_team_std = numpyro.sample("sigma_def_team_std", dist.HalfNormal(0.05))
+    sigma_off_team_std_global = numpyro.sample("sigma_off_team_std", dist.HalfNormal(0.05))
+    sigma_def_team_std_global = numpyro.sample("sigma_def_team_std", dist.HalfNormal(0.05))
 
     h_mu = numpyro.sample("h_mu", dist.Normal(0.0, .05))
 
+    # 2. The Non-Centered Plate
     with numpyro.plate("team", n_teams):
-        h = numpyro.sample("h", dist.Normal(h_mu, tau_h))
-        off_un = numpyro.sample("offense", dist.Normal(0.0, sigma_off))
-        def_un = numpyro.sample("defense", dist.Normal(0.0, sigma_def))
-        t_off_std = numpyro.sample("team_off_std", dist.HalfNormal(sigma_off_team_std))
-        t_def_std = numpyro.sample("team_def_std", dist.HalfNormal(sigma_def_team_std))
+        # Sample standardized z-scores (Standard Normal)
+        z_h = numpyro.sample("z_h", dist.Normal(0.0, 1.0))
+        z_off = numpyro.sample("z_off", dist.Normal(0.0, 1.0))
+        z_def = numpyro.sample("z_def", dist.Normal(0.0, 1.0))
+        # Use HalfNormal z-scores for volatility
+        z_off_vol = numpyro.sample("z_off_vol", dist.HalfNormal(1.0))
+        z_def_vol = numpyro.sample("z_def_vol", dist.HalfNormal(1.0))
 
-    offense = off_un - off_un.mean() # type: ignore
-    defense = def_un - def_un.mean() # type: ignore
+    # 3. Deterministic Recomposition (Scale the z-scores)
+    h = h_mu + z_h * tau_h # type: ignore
+    off_un = z_off * sigma_off
+    def_un = z_def * sigma_def
+    
+    # Deterministic team-specific std devs
+    t_off_std = z_off_vol * sigma_off_team_std_global
+    t_def_std = z_def_vol * sigma_def_team_std_global
 
-    # The Shared Game Effect: One draw per game, applied to both teams
+    # Re-center skill for identifiability
+    offense = off_un - off_un.mean()
+    defense = def_un - def_un.mean()
+
+    # 4. Game-level random effects
     with numpyro.plate("games", n_games):
         gamma = numpyro.sample("gamma", dist.Normal(0.0, sigma_game))
 
-    # Independent Volatility (Epsilon)
+    # Individual Volatility
     eps_h = numpyro.sample("eps_h", dist.Normal(0.0, t_off_std[home_idx] + t_def_std[away_idx])) # type: ignore
     eps_a = numpyro.sample("eps_a", dist.Normal(0.0, t_off_std[away_idx] + t_def_std[home_idx])) # type: ignore
 
@@ -55,6 +64,7 @@ def hierarchal_model(
 
     numpyro.sample("y_home", dist.Poisson(jnp.exp(eta_home)), obs=y_home)
     numpyro.sample("y_away", dist.Poisson(jnp.exp(eta_away)), obs=y_away)
+
 
 def fit_hierarchal_model(encoded: EncodedSeason, seed: int = 0, num_chains: int = 2, num_warmup: int = 100, num_samples: int = 300):
     """

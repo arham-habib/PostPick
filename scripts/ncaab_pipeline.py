@@ -249,7 +249,7 @@ Examples:
                        help="Sport category: men or women (default: men)")
     parser.add_argument("--year", type=int, required=True,
                        help="Year to scrape data for")
-    parser.add_argument("--model", type=str, choices=["Vanilla", "TeamVol"], default="Vanilla",
+    parser.add_argument("--model", type=str, choices=["Vanilla", "TeamVol", "TeamVolGameRandomness"], default="Vanilla",
                        help="Model name (default: Vanilla)")
     parser.add_argument("--monday-date", type=str, required=True,
                        help="Monday date string (YYYY-MM-DD) for model cutoff and simulation week")
@@ -267,7 +267,7 @@ Examples:
     # Simulation options
     parser.add_argument("--backend", type=str, choices=["local", "modal"], default="local",
                        help="Simulation backend: local or modal (default: local)")
-    parser.add_argument("--n-sims", type=int, default=1000,
+    parser.add_argument("--n-sims", type=int, default=100,
                        help="Number of simulations per posterior draw (default: 1000)")
     parser.add_argument("--draw-block-size", type=int, default=50,
                        help="Number of posterior draws to process in each block (default: 50)")

@@ -97,17 +97,17 @@ def load_aggregated_simulation_data(model_name: str, monday_date: str) -> Option
         # Build aggregation query lazily - no data loaded yet
         # Check schema to see if date column exists
         group_cols = ['game_id', 'home_team', 'away_team']
-        if 'date' in lazy_df.schema:
+        if 'date' in lazy_df.collect_schema().keys():
             group_cols.append('date')
         
         # Perform all aggregations in a single lazy query
         result = (
             lazy_df
+            .filter(pl.col('home_score') != pl.col('away_score'))  # Filter out ties before aggregation
             .with_columns([
                 # Compute win indicators
                 (pl.col('home_score') > pl.col('away_score')).cast(pl.Int64).alias('home_wins'),
                 (pl.col('away_score') > pl.col('home_score')).cast(pl.Int64).alias('away_wins'),
-                (pl.col('home_score') == pl.col('away_score')).cast(pl.Int64).alias('ties'),
             ])
             .group_by(group_cols)
             .agg([
@@ -130,15 +130,13 @@ def load_aggregated_simulation_data(model_name: str, monday_date: str) -> Option
                 pl.count().alias('total_sims'),
                 pl.col('home_wins').sum().alias('home_wins'),
                 pl.col('away_wins').sum().alias('away_wins'),
-                pl.col('ties').sum().alias('ties'),
             ])
             .with_columns([
                 # Calculate win probabilities
                 (pl.col('home_wins') / pl.col('total_sims')).fill_null(0).alias('moneyline_home_win'),
                 (pl.col('away_wins') / pl.col('total_sims')).fill_null(0).alias('moneyline_away_win'),
-                (pl.col('ties') / pl.col('total_sims')).fill_null(0).alias('moneyline_tie'),
             ])
-            .drop(['home_wins', 'away_wins', 'ties', 'total_sims'])
+            .drop(['home_wins', 'away_wins', 'total_sims'])
         )
         
         # Execute the lazy query and convert to pandas

@@ -16,16 +16,100 @@ SCRIPT_DIR = Path(__file__).resolve().parent.parent.parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
 
-try:
-    import plotly.graph_objects as go
-    import plotly.express as px
-    PLOTLY_AVAILABLE = True
-except ImportError:
-    PLOTLY_AVAILABLE = False
-    import matplotlib.pyplot as plt
-    import matplotlib.patches as mpatches
+import plotly.graph_objects as go
+import plotly.express as px
+from scipy.stats import gaussian_kde
 
 from src.gui.data_loader import load_raw_simulation_data_for_game, load_model_parameters, DEFAULT_GENDER
+
+
+def _plot_kde_comparison(
+    data1: np.ndarray,
+    data2: np.ndarray,
+    xlabel: str,
+    label1: str,
+    label2: str
+) -> None:
+    """
+    Plot KDE comparison of two distributions using plotly.
+    
+    Args:
+        data1: First dataset (will be plotted in red)
+        data2: Second dataset (will be plotted in blue)
+        xlabel: Label for x-axis
+        label1: Label for first dataset
+        label2: Label for second dataset
+    """
+    # Compute KDE for both datasets
+    # Handle edge case where data might have very low variance
+    try:
+        kde1 = gaussian_kde(data1)
+        kde2 = gaussian_kde(data2)
+    except (ValueError, np.linalg.LinAlgError):
+        # Fallback: if KDE fails (e.g., constant data), use histogram instead
+        st.warning("KDE computation failed, using histogram instead")
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(x=data1, name=label1, marker_color='red', opacity=0.7, nbinsx=30))
+        fig.add_trace(go.Histogram(x=data2, name=label2, marker_color='blue', opacity=0.7, nbinsx=30))
+        fig.update_layout(
+            title=f"Distribution: {xlabel}",
+            xaxis_title=xlabel,
+            yaxis_title="Frequency",
+            barmode='overlay',
+            height=400
+        )
+        st.plotly_chart(fig, width='stretch')
+        return
+    
+    # Create evaluation range
+    min_val = min(data1.min(), data2.min())
+    max_val = max(data1.max(), data2.max())
+    range_size = max_val - min_val
+    if range_size == 0:
+        # Handle case where all values are the same
+        x_range = np.linspace(min_val - 1, max_val + 1, 200)
+    else:
+        x_range = np.linspace(min_val - 0.1 * range_size, 
+                             max_val + 0.1 * range_size, 
+                             200)
+    
+    # Evaluate KDEs
+    y1 = kde1(x_range)
+    y2 = kde2(x_range)
+    
+    fig = go.Figure()
+    
+    # Add first distribution (red)
+    fig.add_trace(go.Scatter(
+        x=x_range,
+        y=y1,
+        mode='lines',
+        name=label1,
+        line=dict(color='red', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(255, 0, 0, 0.2)'
+    ))
+    
+    # Add second distribution (blue)
+    fig.add_trace(go.Scatter(
+        x=x_range,
+        y=y2,
+        mode='lines',
+        name=label2,
+        line=dict(color='blue', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(0, 0, 255, 0.2)'
+    ))
+    
+    fig.update_layout(
+        title=f"Kernel Density Estimate: {xlabel}",
+        xaxis_title=xlabel,
+        yaxis_title="Density",
+        hovermode='x unified',
+        height=400,
+        showlegend=True
+    )
+    st.plotly_chart(fig, width='stretch')
 
 
 def get_team_parameters(
@@ -174,114 +258,64 @@ def render_game_detail_view(
             param_df = pd.DataFrame(param_data)
             st.dataframe(param_df, width='stretch', hide_index=True)
     
-    # Prepare data for visualizations
-    raw_df = raw_df.copy()
-    raw_df['winner'] = raw_df.apply(
-        lambda row: 'Home' if row['home_score'] > row['away_score'] 
-        else ('Away' if row['away_score'] > row['home_score'] else 'Tie'),
-        axis=1
-    )
-    
-    # Section 2: Outcome Distribution (Spread vs Total)
-    st.markdown("### Outcome Distribution: Spread vs Total")
-    
-    if PLOTLY_AVAILABLE:
-        fig = go.Figure()
-        
-        for winner in ['Home', 'Away', 'Tie']:
-            winner_data = raw_df[raw_df['winner'] == winner]
-            if len(winner_data) > 0:
-                color_map = {'Home': 'blue', 'Away': 'red', 'Tie': 'gray'}
-                fig.add_trace(go.Scatter(
-                    x=winner_data['spread'],
-                    y=winner_data['total'],
-                    mode='markers',
-                    name=winner,
-                    marker=dict(
-                        color=color_map.get(winner, 'gray'),
-                        size=3,
-                        opacity=0.6
-                    ),
-                    hovertemplate=f'<b>{winner} Win</b><br>' +
-                                  'Spread: %{x}<br>' +
-                                  'Total: %{y}<br>' +
-                                  '<extra></extra>'
-                ))
-        
-        fig.update_layout(
-            title="Spread vs Total (colored by winner)",
-            xaxis_title="Spread (Home - Away)",
-            yaxis_title="Total Points",
-            hovermode='closest',
-            height=500
-        )
-        st.plotly_chart(fig, width='stretch')
+    # Section 2: Parameter Distribution Plots (KDE)
+    if model_data is None:
+        st.warning("Model parameters not available. Cannot display parameter distributions.")
     else:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        for winner, color in [('Home', 'blue'), ('Away', 'red'), ('Tie', 'gray')]:
-            winner_data = raw_df[raw_df['winner'] == winner]
-            if len(winner_data) > 0:
-                ax.scatter(winner_data['spread'], winner_data['total'], 
-                          c=color, label=winner, alpha=0.6, s=10)
-        ax.set_xlabel("Spread (Home - Away)")
-        ax.set_ylabel("Total Points")
-        ax.set_title("Spread vs Total (colored by winner)")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
-        plt.close(fig)
-    
-    # Section 3: Score Correlation Plot
-    st.markdown("### Score Correlation: Home vs Away")
-    
-    # Calculate correlation
-    correlation = float(raw_df['home_score'].corr(raw_df['away_score']))
-    
-    if PLOTLY_AVAILABLE:
-        fig = go.Figure()
+        samples, team_to_id, id_to_team = model_data
+        home_idx = team_to_id.get(home_team, -1)
+        away_idx = team_to_id.get(away_team, -1)
         
-        for winner in ['Home', 'Away', 'Tie']:
-            winner_data = raw_df[raw_df['winner'] == winner]
-            if len(winner_data) > 0:
-                color_map = {'Home': 'blue', 'Away': 'red', 'Tie': 'gray'}
-                fig.add_trace(go.Scatter(
-                    x=winner_data['home_score'],
-                    y=winner_data['away_score'],
-                    mode='markers',
-                    name=winner,
-                    marker=dict(
-                        color=color_map.get(winner, 'gray'),
-                        size=3,
-                        opacity=0.6
-                    ),
-                    hovertemplate=f'<b>{winner} Win</b><br>' +
-                                  'Home: %{x}<br>' +
-                                  'Away: %{y}<br>' +
-                                  '<extra></extra>'
-                ))
-        
-        fig.update_layout(
-            title=f"Home Score vs Away Score (Correlation: {correlation:.3f})",
-            xaxis_title="Home Score",
-            yaxis_title="Away Score",
-            hovermode='closest',
-            height=500
-        )
-        st.plotly_chart(fig, width='stretch')
-    else:
-        fig, ax = plt.subplots(figsize=(10, 6))
-        for winner, color in [('Home', 'blue'), ('Away', 'red'), ('Tie', 'gray')]:
-            winner_data = raw_df[raw_df['winner'] == winner]
-            if len(winner_data) > 0:
-                ax.scatter(winner_data['home_score'], winner_data['away_score'],
-                          c=color, label=winner, alpha=0.6, s=10)
-        ax.set_xlabel("Home Score")
-        ax.set_ylabel("Away Score")
-        ax.set_title(f"Home Score vs Away Score (Correlation: {correlation:.3f})")
-        ax.legend()
-        ax.grid(True, alpha=0.3)
-        st.pyplot(fig)
-        plt.close(fig)
+        if home_idx == -1 or away_idx == -1:
+            st.warning("Team indices not found. Cannot display parameter distributions.")
+        else:
+            # Extract parameter samples for the two teams (excluding warmup - samples already exclude warmup)
+            # Samples shape: [num_draws, num_teams]
+            home_offense = samples["offense"][:, home_idx]
+            away_offense = samples["offense"][:, away_idx]
+            home_defense = samples["defense"][:, home_idx]
+            away_defense = samples["defense"][:, away_idx]
+            
+            # Get home advantage if available
+            if "h" in samples:
+                home_h = samples["h"][:, home_idx]
+            else:
+                home_h = np.zeros_like(home_offense)
+            
+            # Plot 1: Offensive Rating KDE
+            st.markdown("### Offensive Rating Distribution")
+            _plot_kde_comparison(
+                home_offense, 
+                away_offense, 
+                "Offensive Rating",
+                "Home (Red)", 
+                "Away (Blue)"
+            )
+            
+            # Plot 2: Defensive Rating KDE
+            st.markdown("### Defensive Rating Distribution")
+            _plot_kde_comparison(
+                home_defense, 
+                away_defense, 
+                "Defensive Rating",
+                "Home (Red)", 
+                "Away (Blue)"
+            )
+            
+            # Plot 3: Net Rating Comparison
+            # Home: offense_home + h_home - defense_away
+            # Away: offense_away - defense_home
+            home_net = home_offense + home_h - away_defense
+            away_net = away_offense - home_defense
+            
+            st.markdown("### Net Rating Comparison")
+            _plot_kde_comparison(
+                home_net,
+                away_net,
+                "Net Rating (Offense - Opponent Defense)",
+                "Home Net (Red): offense + home_effect - opponent_defense",
+                "Away Net (Blue): offense - opponent_defense"
+            )
     
     # Section 4: Additional Monte Carlo Statistics
     st.markdown("### Monte Carlo Statistics")
@@ -290,30 +324,20 @@ def render_game_detail_view(
     
     with col1:
         st.markdown("#### Spread Distribution")
-        if PLOTLY_AVAILABLE:
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=raw_df['spread'],
-                nbinsx=50,
-                name='Spread',
-                marker_color='lightblue'
-            ))
-            fig.update_layout(
-                title="Distribution of Spread",
-                xaxis_title="Spread",
-                yaxis_title="Frequency",
-                height=300
-            )
-            st.plotly_chart(fig, width='stretch')
-        else:
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.hist(raw_df['spread'], bins=50, color='lightblue', edgecolor='black')
-            ax.set_xlabel("Spread")
-            ax.set_ylabel("Frequency")
-            ax.set_title("Distribution of Spread")
-            ax.grid(True, alpha=0.3)
-            st.pyplot(fig)
-            plt.close(fig)
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=raw_df['spread'],
+            nbinsx=50,
+            name='Spread',
+            marker_color='lightblue'
+        ))
+        fig.update_layout(
+            title="Distribution of Spread",
+            xaxis_title="Spread",
+            yaxis_title="Frequency",
+            height=300
+        )
+        st.plotly_chart(fig, width='stretch')
         
         # Spread statistics
         spread_stats = {
@@ -327,30 +351,20 @@ def render_game_detail_view(
     
     with col2:
         st.markdown("#### Total Distribution")
-        if PLOTLY_AVAILABLE:
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=raw_df['total'],
-                nbinsx=50,
-                name='Total',
-                marker_color='lightgreen'
-            ))
-            fig.update_layout(
-                title="Distribution of Total",
-                xaxis_title="Total Points",
-                yaxis_title="Frequency",
-                height=300
-            )
-            st.plotly_chart(fig, width='stretch')
-        else:
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.hist(raw_df['total'], bins=50, color='lightgreen', edgecolor='black')
-            ax.set_xlabel("Total Points")
-            ax.set_ylabel("Frequency")
-            ax.set_title("Distribution of Total")
-            ax.grid(True, alpha=0.3)
-            st.pyplot(fig)
-            plt.close(fig)
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=raw_df['total'],
+            nbinsx=50,
+            name='Total',
+            marker_color='lightgreen'
+        ))
+        fig.update_layout(
+            title="Distribution of Total",
+            xaxis_title="Total Points",
+            yaxis_title="Frequency",
+            height=300
+        )
+        st.plotly_chart(fig, width='stretch')
         
         # Total statistics
         total_stats = {
@@ -364,43 +378,29 @@ def render_game_detail_view(
     
     with col3:
         st.markdown("#### Score Distributions")
-        if PLOTLY_AVAILABLE:
-            fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=raw_df['home_score'],
-                nbinsx=30,
-                name='Home',
-                marker_color='blue',
-                opacity=0.7
-            ))
-            fig.add_trace(go.Histogram(
-                x=raw_df['away_score'],
-                nbinsx=30,
-                name='Away',
-                marker_color='red',
-                opacity=0.7
-            ))
-            fig.update_layout(
-                title="Home vs Away Score Distribution",
-                xaxis_title="Score",
-                yaxis_title="Frequency",
-                barmode='overlay',
-                height=300
-            )
-            st.plotly_chart(fig, width='stretch')
-        else:
-            fig, ax = plt.subplots(figsize=(6, 4))
-            ax.hist(raw_df['home_score'], bins=30, color='blue', alpha=0.7, 
-                   label='Home', edgecolor='black')
-            ax.hist(raw_df['away_score'], bins=30, color='red', alpha=0.7,
-                   label='Away', edgecolor='black')
-            ax.set_xlabel("Score")
-            ax.set_ylabel("Frequency")
-            ax.set_title("Home vs Away Score Distribution")
-            ax.legend()
-            ax.grid(True, alpha=0.3)
-            st.pyplot(fig)
-            plt.close(fig)
+        fig = go.Figure()
+        fig.add_trace(go.Histogram(
+            x=raw_df['home_score'],
+            nbinsx=30,
+            name='Home',
+            marker_color='blue',
+            opacity=0.7
+        ))
+        fig.add_trace(go.Histogram(
+            x=raw_df['away_score'],
+            nbinsx=30,
+            name='Away',
+            marker_color='red',
+            opacity=0.7
+        ))
+        fig.update_layout(
+            title="Home vs Away Score Distribution",
+            xaxis_title="Score",
+            yaxis_title="Frequency",
+            barmode='overlay',
+            height=300
+        )
+        st.plotly_chart(fig, width='stretch')
         
         # Score statistics
         score_stats = {
@@ -410,36 +410,6 @@ def render_game_detail_view(
             "Away Std": f"{raw_df['away_score'].std():.2f}",
         }
         st.json(score_stats)
-    
-    # Extreme outcomes
-    st.markdown("#### Extreme Outcomes")
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        # Blowout probability (win by 20+)
-        home_blowouts = ((raw_df['home_score'] - raw_df['away_score']) >= 20).sum()
-        away_blowouts = ((raw_df['away_score'] - raw_df['home_score']) >= 20).sum()
-        total_sims = len(raw_df)
-        
-        st.metric("Home Blowout (20+ pts)", 
-                 f"{(home_blowouts / total_sims * 100):.1f}%",
-                 f"{home_blowouts:,} sims")
-        st.metric("Away Blowout (20+ pts)",
-                 f"{(away_blowouts / total_sims * 100):.1f}%",
-                 f"{away_blowouts:,} sims")
-    
-    with col2:
-        # Close game probability (within 3 points)
-        close_games = (abs(raw_df['spread']) <= 3).sum()
-        st.metric("Close Game (≤3 pts)", 
-                 f"{(close_games / total_sims * 100):.1f}%",
-                 f"{close_games:,} sims")
-        
-        # High scoring (total > 160)
-        high_scoring = (raw_df['total'] > 160).sum()
-        st.metric("High Scoring (>160 pts)",
-                 f"{(high_scoring / total_sims * 100):.1f}%",
-                 f"{high_scoring:,} sims")
     
     # Win probability by score ranges
     st.markdown("#### Win Probability by Score Ranges")

@@ -10,12 +10,20 @@
 - [x] Table stakes model -- harden this training pipeline
     - Offensive, defensive, and home effect
 - [x] Add team-level dispersion
-- [ ] Switch to non-exponential space
+- [ ] Add game-level dispersion
 - [x] Clean up logging
+- [ ] Model ensemble
+- [ ] Model "goodness" metrics
 
 ### GUI
 - [x] display the parameters for a team
 - [x] display the outcomes of the game as simulated in the parquet file
-- [ ] get rid of ties
+- [x] get rid of ties
+- [x] display monte carlo offense/defense ratings
 
+### Infra
+- [ ] Switch to AWS S3 for storing simulations
 
+### Tests
+- [ ] Test new Modal pipeline
+- [ ] Test TeamVolGameRandomness
